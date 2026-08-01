@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { parseScopeId, type ScopeId } from "../types.ts";
-import { createKeyedQueue } from "../util/async.ts";
 import type { MemoryService } from "./memory-service.ts";
 
 export interface GbrainOptions {
@@ -16,7 +15,6 @@ export interface GbrainOptions {
 
 export interface GbrainClient {
   search(scopeId: ScopeId, q: string, limit: number): Promise<string[]>;
-  mirror(scopeId: ScopeId, content: string): Promise<void>;
 }
 
 const DEFAULT_DEADLINE_MS = 4000;
@@ -42,15 +40,15 @@ export function scopeMemoryPrefix(scopeId: ScopeId): string {
   return `${SCOPE_NAMESPACE}/${slugSegment(kind ?? "unknown")}/${slugSegment(ref)}-${digest}`;
 }
 
-export function scopeMemorySlug(scopeId: ScopeId): string {
-  return `${scopeMemoryPrefix(scopeId)}/memory`;
-}
-
 export function isVisibleToScope(scopeId: ScopeId, slug: string | undefined): boolean {
   if (!slug) return false;
-  const normalized = slug.toLowerCase();
+  const normalized = slug
+    .trim()
+    .toLowerCase()
+    .replace(/^\/+/, "")
+    .replace(/\/{2,}/g, "/");
   if (!normalized.startsWith(`${SCOPE_NAMESPACE}/`)) return true;
-  return normalized === scopeMemorySlug(scopeId) || normalized.startsWith(`${scopeMemoryPrefix(scopeId)}/`);
+  return normalized.startsWith(`${scopeMemoryPrefix(scopeId)}/`);
 }
 
 function stripTrailingSlash(url: string): string {
@@ -136,11 +134,10 @@ function searchRows(text: string): Array<{ slug?: string; title?: string; body: 
   for (const row of rows) {
     if (!row || typeof row !== "object") continue;
     const r = row as { slug?: string; title?: string; chunk_text?: string; excerpt?: string; content?: string };
-    const body = (r.chunk_text ?? r.excerpt ?? r.content ?? "").replace(/\s+/g, " ").trim();
     out.push({
       ...(typeof r.slug === "string" ? { slug: r.slug } : {}),
       ...(typeof r.title === "string" ? { title: r.title } : {}),
-      body,
+      body: (r.chunk_text ?? r.excerpt ?? r.content ?? "").replace(/\s+/g, " ").trim(),
     });
   }
   return out;
@@ -163,7 +160,7 @@ export function createGbrainClient(options: GbrainOptions): GbrainClient {
         grant_type: "client_credentials",
         client_id: options.clientId,
         client_secret: options.clientSecret,
-        scope: "read write",
+        scope: "read",
       }).toString(),
       redirect: "error",
       signal,
@@ -201,10 +198,11 @@ export function createGbrainClient(options: GbrainOptions): GbrainClient {
         signal,
       });
 
-    let res = await send(await accessToken(signal));
+    const bearer = await accessToken(signal);
+    let res = await send(bearer);
     if (res.status === 401) {
       await res.body?.cancel();
-      token = undefined;
+      if (token?.value === bearer) token = undefined;
       res = await send(await accessToken(signal));
     }
     const text = await boundedText(res);
@@ -230,45 +228,13 @@ export function createGbrainClient(options: GbrainOptions): GbrainClient {
         return [];
       }
     },
-    async mirror(scopeId, content) {
-      try {
-        const page = [
-          "---",
-          "type: note",
-          `title: ${JSON.stringify(`${scopeId} memory`)}`,
-          "---",
-          "",
-          content.trim(),
-          "",
-        ].join("\n");
-        await callTool("put_page", { slug: scopeMemorySlug(scopeId), content: page });
-      } catch (e) {
-        report(e);
-      }
-    },
   };
 }
 
 export function createGbrainMemory(base: MemoryService, client: GbrainClient | undefined): MemoryService {
   if (!client) return base;
-  const perScope = createKeyedQueue<ScopeId>();
-  const mirrorLatest = (scopeId: ScopeId): void => {
-    void perScope(scopeId, async () => {
-      await client.mirror(scopeId, await base.read(scopeId));
-    }).catch(() => {});
-  };
-
-  const wrapped: MemoryService = {
+  return {
     ...base,
-    async capture(scopeId, facts, at, author) {
-      const added = await base.capture(scopeId, facts, at, author);
-      if (added > 0) mirrorLatest(scopeId);
-      return added;
-    },
-    async replace(scopeId, content, author) {
-      await base.replace(scopeId, content, author);
-      mirrorLatest(scopeId);
-    },
     async query(scopeId, q, limit) {
       const cap = limit ?? DEFAULT_QUERY_LIMIT;
       const local = await base.query(scopeId, q, cap);
@@ -286,20 +252,4 @@ export function createGbrainMemory(base: MemoryService, client: GbrainClient | u
       return merged;
     },
   };
-
-  if (base.replaceIfRevision) {
-    wrapped.replaceIfRevision = async (scopeId, content, revision, author) => {
-      const ok = await base.replaceIfRevision!(scopeId, content, revision, author);
-      if (ok) mirrorLatest(scopeId);
-      return ok;
-    };
-  }
-  if (base.restore) {
-    wrapped.restore = async (scopeId, revision, expectedRevision, author) => {
-      const ok = await base.restore!(scopeId, revision, expectedRevision, author);
-      if (ok) mirrorLatest(scopeId);
-      return ok;
-    };
-  }
-  return wrapped;
 }
