@@ -5,6 +5,7 @@ import type { MemoryService } from "../src/memory/memory-service.ts";
 import {
   createGbrainClient,
   createGbrainMemory,
+  isVisibleToScope,
   scopeMemorySlug,
   type GbrainClient,
 } from "../src/memory/gbrain-memory-service.ts";
@@ -67,8 +68,8 @@ const clientOptions = (fetchImpl: typeof fetch, onError?: (e: unknown) => void) 
 
 describe("scopeMemorySlug", () => {
   it("maps a scope to a lowercase slug-safe path", () => {
-    assert.equal(scopeMemorySlug(scopeId("personal", "U0ALICE")), "qm/personal/u0alice/memory");
-    assert.equal(scopeMemorySlug(scopeId("channel", "C_123/../x")), "qm/channel/c-123-x/memory");
+    assert.match(scopeMemorySlug(scopeId("personal", "U0ALICE")), /^qm\/personal\/u0alice-[0-9a-f]{12}\/memory$/);
+    assert.match(scopeMemorySlug(scopeId("channel", "C_123/../x")), /^qm\/channel\/c-123-x-[0-9a-f]{12}\/memory$/);
   });
 
   it("keeps distinct scopes on distinct slugs", () => {
@@ -217,7 +218,8 @@ describe("createGbrainClient", () => {
     };
     assert.equal(body.method, "tools/call");
     assert.equal(body.params.name, "search");
-    assert.deepEqual(body.params.arguments, { query: "renewal", limit: 3 });
+    assert.equal(body.params.arguments.query, "renewal");
+    assert.ok((body.params.arguments.limit as number) >= 3);
   });
 
   it("parses structured search results into snippets", async () => {
@@ -227,7 +229,7 @@ describe("createGbrainClient", () => {
         c.url.endsWith("/mcp")
           ? toolResponse(
               JSON.stringify([
-                { slug: "org/handbook", title: "Handbook", excerpt: "we ship on   fridays" },
+                { slug: "org/handbook", title: "Handbook", chunk_text: "we ship on   fridays" },
                 { slug: "org/notes" },
               ]),
             )
@@ -243,7 +245,9 @@ describe("createGbrainClient", () => {
     const sse = `event: message\ndata: ${JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
-      result: { content: [{ type: "text", text: JSON.stringify([{ title: "T", excerpt: "body" }]) }] },
+      result: {
+        content: [{ type: "text", text: JSON.stringify([{ slug: "org/t", title: "T", chunk_text: "body" }]) }],
+      },
     })}\n\n`;
     const { impl } = recordingFetch([
       (c) => (c.url.endsWith("/token") ? tokenResponse() : undefined),
@@ -297,5 +301,111 @@ describe("createGbrainClient", () => {
     const client = createGbrainClient(clientOptions(impl, (e) => seen.push(e)));
     assert.deepEqual(await client.search(SCOPE, "q", 5), []);
     assert.match(String(seen[0]), /permission_denied/);
+  });
+});
+
+describe("scope isolation of remote results", () => {
+  const OTHER = scopeId("personal", "U0BOB");
+
+  it("hides another scope's memory page from this scope", () => {
+    assert.equal(isVisibleToScope(SCOPE, scopeMemorySlug(OTHER)), false);
+    assert.equal(isVisibleToScope(SCOPE, scopeMemorySlug(SCOPE)), true);
+  });
+
+  it("keeps shared org pages visible", () => {
+    assert.equal(isVisibleToScope(SCOPE, "org/handbook"), true);
+  });
+
+  it("drops rows with no slug, since visibility cannot be checked", () => {
+    assert.equal(isVisibleToScope(SCOPE, undefined), false);
+  });
+
+  it("filters another scope's page out of live search results", async () => {
+    const { impl } = recordingFetch([
+      (c) => (c.url.endsWith("/token") ? tokenResponse() : undefined),
+      (c) =>
+        c.url.endsWith("/mcp")
+          ? toolResponse(
+              JSON.stringify([
+                { slug: scopeMemorySlug(OTHER), title: "bob memory", chunk_text: "bob is interviewing elsewhere" },
+                { slug: "org/handbook", title: "Handbook", chunk_text: "we ship on fridays" },
+                { slug: scopeMemorySlug(SCOPE), title: "my memory", chunk_text: "mine" },
+              ]),
+            )
+          : undefined,
+    ]);
+    const hits = await createGbrainClient(clientOptions(impl)).search(SCOPE, "interview", 10);
+    assert.equal(
+      hits.some((h) => h.includes("interviewing elsewhere")),
+      false,
+    );
+    assert.deepEqual(hits, ["Handbook: we ship on fridays", "my memory: mine"]);
+  });
+});
+
+describe("mutations other than capture reach the brain", () => {
+  const recordingClient = (sink: string[]): GbrainClient => ({
+    search: async () => [],
+    mirror: async (_s, content) => {
+      sink.push(content);
+    },
+  });
+
+  it("mirrors after replace, so a local deletion does not persist off-box", async () => {
+    const mirrored: string[] = [];
+    let stored = "# Memory\n\n- secret";
+    const base = stubBase({
+      read: async () => stored,
+      replace: async (_s, content) => {
+        stored = content;
+      },
+    });
+    const memory = createGbrainMemory(base, recordingClient(mirrored));
+    await memory.replace(SCOPE, "# Memory\n");
+    await new Promise((r) => setImmediate(r));
+    assert.equal(mirrored.length, 1);
+    assert.equal(mirrored[0]!.includes("secret"), false);
+  });
+
+  it("mirrors after a successful replaceIfRevision and not after a failed one", async () => {
+    const mirrored: string[] = [];
+    let ok = true;
+    const base = stubBase({ replaceIfRevision: async () => ok });
+    const memory = createGbrainMemory(base, recordingClient(mirrored));
+    await memory.replaceIfRevision!(SCOPE, "x", "rev");
+    await new Promise((r) => setImmediate(r));
+    assert.equal(mirrored.length, 1);
+    ok = false;
+    await memory.replaceIfRevision!(SCOPE, "y", "rev");
+    await new Promise((r) => setImmediate(r));
+    assert.equal(mirrored.length, 1);
+  });
+
+  it("leaves optional methods absent when the base does not implement them", () => {
+    const memory = createGbrainMemory(stubBase(), recordingClient([]));
+    assert.equal(memory.replaceIfRevision, undefined);
+    assert.equal(memory.restore, undefined);
+  });
+
+  it("serializes mirrors per scope so the last write wins", async () => {
+    const order: string[] = [];
+    let stored = "0";
+    const base = stubBase({
+      capture: async () => 1,
+      read: async () => stored,
+    });
+    const memory = createGbrainMemory(base, {
+      search: async () => [],
+      mirror: async (_s, content) => {
+        await new Promise((r) => setTimeout(r, 5));
+        order.push(content);
+      },
+    });
+    stored = "1";
+    await memory.capture(SCOPE, ["a"], Date.now());
+    stored = "2";
+    await memory.capture(SCOPE, ["b"], Date.now());
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(order.at(-1), "2");
   });
 });

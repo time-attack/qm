@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { parseScopeId, type ScopeId } from "../types.ts";
+import { createKeyedQueue } from "../util/async.ts";
 import type { MemoryService } from "./memory-service.ts";
 
 export interface GbrainOptions {
@@ -6,7 +8,7 @@ export interface GbrainOptions {
   issuerUrl: string;
   clientId: string;
   clientSecret: string;
-  timeoutMs?: number;
+  deadlineMs?: number;
   onError?: (e: unknown) => void;
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -17,73 +19,129 @@ export interface GbrainClient {
   mirror(scopeId: ScopeId, content: string): Promise<void>;
 }
 
-const DEFAULT_TIMEOUT_MS = 5000;
+const DEFAULT_DEADLINE_MS = 4000;
+const DEFAULT_QUERY_LIMIT = 20;
 const TOKEN_SKEW_MS = 30_000;
 const MAX_SNIPPET_CHARS = 400;
+const MAX_RESPONSE_BYTES = 2_000_000;
+const SCOPE_NAMESPACE = "qm";
+const OVERFETCH = 3;
 
 function slugSegment(value: string): string {
-  const cleaned = value
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return cleaned || "unknown";
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "x"
+  );
+}
+
+export function scopeMemoryPrefix(scopeId: ScopeId): string {
+  const { kind, ref } = parseScopeId(scopeId);
+  const digest = createHash("sha256").update(scopeId).digest("hex").slice(0, 12);
+  return `${SCOPE_NAMESPACE}/${slugSegment(kind ?? "unknown")}/${slugSegment(ref)}-${digest}`;
 }
 
 export function scopeMemorySlug(scopeId: ScopeId): string {
-  const { kind, ref } = parseScopeId(scopeId);
-  return `qm/${slugSegment(kind ?? "unknown")}/${slugSegment(ref)}/memory`;
+  return `${scopeMemoryPrefix(scopeId)}/memory`;
+}
+
+export function isVisibleToScope(scopeId: ScopeId, slug: string | undefined): boolean {
+  if (!slug) return false;
+  const normalized = slug.toLowerCase();
+  if (!normalized.startsWith(`${SCOPE_NAMESPACE}/`)) return true;
+  return normalized === scopeMemorySlug(scopeId) || normalized.startsWith(`${scopeMemoryPrefix(scopeId)}/`);
 }
 
 function stripTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-function textFromMcpBody(body: string): string {
-  const trimmed = body.trim();
-  if (!trimmed.startsWith("event:") && !trimmed.startsWith("data:")) return trimmed;
-  const payloads = trimmed
-    .split("\n")
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trim())
-    .filter(Boolean);
-  return payloads.at(-1) ?? "";
+async function boundedText(res: Response): Promise<string> {
+  const declared = Number(res.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    throw new Error("gbrain response too large");
+  }
+  const reader = res.body?.getReader();
+  if (!reader) return (await res.text()).slice(0, MAX_RESPONSE_BYTES);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_RESPONSE_BYTES) {
+      await reader.cancel();
+      throw new Error("gbrain response too large");
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
-function toolResultText(body: string): string {
-  const envelope = JSON.parse(textFromMcpBody(body)) as {
+function rpcEnvelopes(body: string): unknown[] {
+  const trimmed = body.trim();
+  if (!trimmed) return [];
+  if (!/^(event|data|id|retry):/m.test(trimmed)) {
+    try {
+      return [JSON.parse(trimmed)];
+    } catch {
+      return [];
+    }
+  }
+  const out: unknown[] = [];
+  for (const frame of trimmed.split(/\n\s*\n/)) {
+    const data = frame
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (!data) continue;
+    try {
+      out.push(JSON.parse(data));
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+function toolResultText(body: string, id: number): string {
+  const envelopes = rpcEnvelopes(body) as Array<{
+    id?: unknown;
     error?: { message?: string };
     result?: { isError?: boolean; content?: Array<{ type?: string; text?: string }> };
-  };
-  if (envelope.error) throw new Error(envelope.error.message ?? "gbrain rpc error");
-  const text = envelope.result?.content?.find((c) => c.type === "text")?.text ?? "";
-  if (envelope.result?.isError) throw new Error(text || "gbrain tool error");
+  }>;
+  const match = envelopes.find((e) => e.id === id && (e.result !== undefined || e.error !== undefined));
+  if (!match) throw new Error("gbrain response carried no result for this request");
+  if (match.error) throw new Error(match.error.message ?? "gbrain rpc error");
+  const text = match.result?.content?.find((c) => c.type === "text")?.text ?? "";
+  if (match.result?.isError) throw new Error(text || "gbrain tool error");
   return text;
 }
 
-function snippetsFrom(text: string, limit: number): string[] {
+function searchRows(text: string): Array<{ slug?: string; title?: string; body: string }> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return text.trim() ? [text.trim().slice(0, MAX_SNIPPET_CHARS)] : [];
+    return [];
   }
   const rows = Array.isArray(parsed)
     ? parsed
     : Array.isArray((parsed as { results?: unknown[] })?.results)
       ? (parsed as { results: unknown[] }).results
       : [];
-  const out: string[] = [];
+  const out: Array<{ slug?: string; title?: string; body: string }> = [];
   for (const row of rows) {
-    if (typeof row === "string") {
-      if (row.trim()) out.push(row.trim().slice(0, MAX_SNIPPET_CHARS));
-      continue;
-    }
-    const r = row as { slug?: string; title?: string; excerpt?: string; content?: string; text?: string };
-    const body = (r.excerpt ?? r.content ?? r.text ?? "").replace(/\s+/g, " ").trim();
-    const label = r.title ?? r.slug;
-    const line = label && body ? `${label}: ${body}` : body || label || "";
-    if (line) out.push(line.slice(0, MAX_SNIPPET_CHARS));
-    if (out.length >= limit) break;
+    if (!row || typeof row !== "object") continue;
+    const r = row as { slug?: string; title?: string; chunk_text?: string; excerpt?: string; content?: string };
+    const body = (r.chunk_text ?? r.excerpt ?? r.content ?? "").replace(/\s+/g, " ").trim();
+    out.push({
+      ...(typeof r.slug === "string" ? { slug: r.slug } : {}),
+      ...(typeof r.title === "string" ? { title: r.title } : {}),
+      body,
+    });
   }
   return out;
 }
@@ -91,11 +149,13 @@ function snippetsFrom(text: string, limit: number): string[] {
 export function createGbrainClient(options: GbrainOptions): GbrainClient {
   const doFetch = options.fetchImpl ?? fetch;
   const now = options.now ?? Date.now;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const deadlineMs = options.deadlineMs ?? DEFAULT_DEADLINE_MS;
   const report = options.onError ?? (() => {});
   let token: { value: string; expiresAt: number } | undefined;
+  let minting: Promise<string> | undefined;
+  let rpcId = 0;
 
-  async function mintToken(): Promise<string> {
+  async function mintToken(signal: AbortSignal): Promise<string> {
     const res = await doFetch(`${stripTrailingSlash(options.issuerUrl)}/token`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -105,24 +165,29 @@ export function createGbrainClient(options: GbrainOptions): GbrainClient {
         client_secret: options.clientSecret,
         scope: "read write",
       }).toString(),
-      signal: AbortSignal.timeout(timeoutMs),
+      redirect: "error",
+      signal,
     });
+    const text = await boundedText(res);
     if (!res.ok) throw new Error(`gbrain token ${res.status}`);
-    const body = (await res.json()) as { access_token?: string; expires_in?: number };
+    const body = JSON.parse(text) as { access_token?: string; expires_in?: number };
     if (!body.access_token) throw new Error("gbrain token response missing access_token");
-    token = {
-      value: body.access_token,
-      expiresAt: now() + (body.expires_in ?? 0) * 1000,
-    };
-    return token.value;
+    const lifetimeMs = Number.isFinite(body.expires_in) ? (body.expires_in as number) * 1000 : 0;
+    token = { value: body.access_token, expiresAt: now() + lifetimeMs };
+    return body.access_token;
   }
 
-  async function accessToken(): Promise<string> {
+  async function accessToken(signal: AbortSignal): Promise<string> {
     if (token && token.expiresAt - TOKEN_SKEW_MS > now()) return token.value;
-    return mintToken();
+    minting ??= mintToken(signal).finally(() => {
+      minting = undefined;
+    });
+    return minting;
   }
 
   async function callTool(name: string, args: Record<string, unknown>): Promise<string> {
+    const signal = AbortSignal.timeout(deadlineMs);
+    const id = ++rpcId;
     const send = async (bearer: string) =>
       doFetch(options.mcpUrl, {
         method: "POST",
@@ -131,28 +196,35 @@ export function createGbrainClient(options: GbrainOptions): GbrainClient {
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
         },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "tools/call",
-          params: { name, arguments: args },
-        }),
-        signal: AbortSignal.timeout(timeoutMs),
+        body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
+        redirect: "error",
+        signal,
       });
 
-    let res = await send(await accessToken());
+    let res = await send(await accessToken(signal));
     if (res.status === 401) {
+      await res.body?.cancel();
       token = undefined;
-      res = await send(await accessToken());
+      res = await send(await accessToken(signal));
     }
+    const text = await boundedText(res);
     if (!res.ok) throw new Error(`gbrain ${name} ${res.status}`);
-    return toolResultText(await res.text());
+    return toolResultText(text, id);
   }
 
   return {
     async search(scopeId, q, limit) {
       try {
-        return snippetsFrom(await callTool("search", { query: q, limit }), limit);
+        const text = await callTool("search", { query: q, limit: limit * OVERFETCH });
+        const out: string[] = [];
+        for (const row of searchRows(text)) {
+          if (!isVisibleToScope(scopeId, row.slug)) continue;
+          const label = row.title ?? row.slug;
+          const line = label && row.body ? `${label}: ${row.body}` : row.body || label || "";
+          if (line) out.push(line.slice(0, MAX_SNIPPET_CHARS));
+          if (out.length >= limit) break;
+        }
+        return out;
       } catch (e) {
         report(e);
         return [];
@@ -160,9 +232,16 @@ export function createGbrainClient(options: GbrainOptions): GbrainClient {
     },
     async mirror(scopeId, content) {
       try {
-        const slug = scopeMemorySlug(scopeId);
-        const page = `---\ntype: note\ntitle: ${scopeId} memory\n---\n\n${content.trim()}\n`;
-        await callTool("put_page", { slug, content: page });
+        const page = [
+          "---",
+          "type: note",
+          `title: ${JSON.stringify(`${scopeId} memory`)}`,
+          "---",
+          "",
+          content.trim(),
+          "",
+        ].join("\n");
+        await callTool("put_page", { slug: scopeMemorySlug(scopeId), content: page });
       } catch (e) {
         report(e);
       }
@@ -172,20 +251,26 @@ export function createGbrainClient(options: GbrainOptions): GbrainClient {
 
 export function createGbrainMemory(base: MemoryService, client: GbrainClient | undefined): MemoryService {
   if (!client) return base;
-  return {
+  const perScope = createKeyedQueue<ScopeId>();
+  const mirrorLatest = (scopeId: ScopeId): void => {
+    void perScope(scopeId, async () => {
+      await client.mirror(scopeId, await base.read(scopeId));
+    }).catch(() => {});
+  };
+
+  const wrapped: MemoryService = {
     ...base,
     async capture(scopeId, facts, at, author) {
       const added = await base.capture(scopeId, facts, at, author);
-      if (added > 0) {
-        void base
-          .read(scopeId)
-          .then((content) => client.mirror(scopeId, content))
-          .catch(() => {});
-      }
+      if (added > 0) mirrorLatest(scopeId);
       return added;
     },
+    async replace(scopeId, content, author) {
+      await base.replace(scopeId, content, author);
+      mirrorLatest(scopeId);
+    },
     async query(scopeId, q, limit) {
-      const cap = limit ?? 10;
+      const cap = limit ?? DEFAULT_QUERY_LIMIT;
       const local = await base.query(scopeId, q, cap);
       if (local.length >= cap) return local;
       const remote = await client.search(scopeId, q, cap).catch(() => []);
@@ -201,4 +286,20 @@ export function createGbrainMemory(base: MemoryService, client: GbrainClient | u
       return merged;
     },
   };
+
+  if (base.replaceIfRevision) {
+    wrapped.replaceIfRevision = async (scopeId, content, revision, author) => {
+      const ok = await base.replaceIfRevision!(scopeId, content, revision, author);
+      if (ok) mirrorLatest(scopeId);
+      return ok;
+    };
+  }
+  if (base.restore) {
+    wrapped.restore = async (scopeId, revision, expectedRevision, author) => {
+      const ok = await base.restore!(scopeId, revision, expectedRevision, author);
+      if (ok) mirrorLatest(scopeId);
+      return ok;
+    };
+  }
+  return wrapped;
 }
