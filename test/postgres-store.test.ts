@@ -872,6 +872,99 @@ test("pg session counters: boot backfill fills pre-column rows", { skip }, async
   assert.equal(stats.turns, 3 + 7, "stats sum the stored turns counters, never the entries");
 });
 
+test("pg run store: tool_calls primary-key migration is conditional and atomic", { skip }, async () => {
+  const pg = (await import("pg")).default;
+  const raw = new pg.Pool({ connectionString: URL });
+  const primaryKey = async () => {
+    const result = await raw.query(
+      `SELECT c.oid::text AS constraint_oid, c.conindid::text AS index_oid,
+              pg_get_constraintdef(c.oid) AS definition
+         FROM pg_constraint c
+        WHERE c.conrelid = 'tool_calls'::regclass AND c.contype = 'p'`,
+    );
+    return result.rows[0] as { constraint_oid: string; index_oid: string; definition: string };
+  };
+  const boot = async (connectionString = URL!) => {
+    const runtime = createPostgresRunStore(connectionString);
+    await runtime.runs.get("migration-probe");
+    await runtime.close();
+  };
+
+  try {
+    await raw.query("DROP TABLE IF EXISTS tool_calls CASCADE");
+    await boot();
+    const current = await primaryKey();
+    const writer = await raw.connect();
+    try {
+      await writer.query("BEGIN");
+      await writer.query("INSERT INTO tool_calls VALUES ('current-run', 1, 0, 'pending', 1)");
+      const lockBoundUrl = new globalThis.URL(URL!);
+      const options = lockBoundUrl.searchParams.get("options");
+      lockBoundUrl.searchParams.set("options", `${options ? `${options} ` : ""}-c lock_timeout=250ms`);
+      await boot(lockBoundUrl.toString());
+    } finally {
+      await writer.query("ROLLBACK");
+      writer.release();
+    }
+    assert.deepEqual(await primaryKey(), current, "a current schema keeps the existing constraint and index");
+
+    await raw.query("DROP TABLE tool_calls");
+    await raw.query(`CREATE TABLE tool_calls(
+      run_id TEXT NOT NULL, call_index INT NOT NULL, output TEXT NOT NULL, created_at BIGINT NOT NULL,
+      PRIMARY KEY(run_id, call_index)
+    )`);
+    await raw.query("ALTER TABLE tool_calls RENAME CONSTRAINT tool_calls_pkey TO legacy_tool_calls_pk");
+    await raw.query("INSERT INTO tool_calls VALUES ('legacy-run', 0, 'cached', 1)");
+    const legacy = await primaryKey();
+    const migratedRuntime = createPostgresRunStore(URL!);
+    assert.deepEqual(await migratedRuntime.ledger.begin("legacy-run", 1, 0), { cached: true, output: "cached" });
+    await migratedRuntime.close();
+    const migrated = await primaryKey();
+    assert.equal(migrated.definition, "PRIMARY KEY (run_id, attempt, call_index)");
+    assert.notEqual(migrated.index_oid, legacy.index_oid, "the legacy key is replaced once");
+    assert.equal((await raw.query("SELECT attempt FROM tool_calls WHERE run_id = 'legacy-run'")).rows[0]!.attempt, 1);
+    await boot();
+    assert.deepEqual(await primaryKey(), migrated, "the migrated schema is unchanged by later boots");
+
+    await raw.query("DROP TABLE tool_calls");
+    await raw.query(`CREATE TABLE tool_calls(
+      run_id TEXT NOT NULL, attempt INT NOT NULL, call_index INT NOT NULL,
+      output TEXT NOT NULL, created_at BIGINT NOT NULL
+    )`);
+    await raw.query("INSERT INTO tool_calls VALUES ('interrupted-run', 1, 0, 'cached', 1)");
+    const interruptedRuntime = createPostgresRunStore(URL!);
+    assert.deepEqual(await interruptedRuntime.ledger.begin("interrupted-run", 1, 0), {
+      cached: true,
+      output: "cached",
+    });
+    await interruptedRuntime.close();
+    const recovered = await primaryKey();
+    assert.equal(recovered.definition, "PRIMARY KEY (run_id, attempt, call_index)");
+    await boot();
+    assert.deepEqual(await primaryKey(), recovered, "an interrupted migration is repaired once");
+
+    await raw.query("DROP TABLE tool_calls");
+    await raw.query(`CREATE TABLE tool_calls(
+      run_id TEXT NOT NULL, attempt INT NOT NULL, call_index INT NOT NULL,
+      output TEXT NOT NULL, created_at BIGINT NOT NULL,
+      PRIMARY KEY(run_id, created_at)
+    )`);
+    await raw.query(
+      "INSERT INTO tool_calls VALUES ('duplicate-run', 1, 0, 'first', 1), ('duplicate-run', 1, 0, 'second', 2)",
+    );
+    const beforeFailure = await primaryKey();
+    const failedRuntime = createPostgresRunStore(URL!);
+    await assert.rejects(failedRuntime.runs.get("migration-probe"), (error: unknown) => {
+      return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "23505";
+    });
+    assert.deepEqual(await primaryKey(), beforeFailure, "a failed replacement rolls back the primary-key drop");
+    assert.equal((await raw.query("SELECT count(*)::int AS count FROM tool_calls")).rows[0]!.count, 2);
+  } finally {
+    await raw.query("DROP TABLE IF EXISTS tool_calls CASCADE");
+    await raw.end();
+  }
+});
+
 test("pg run store: enqueue dedup, atomic one-per-session claim, fencing, ledger, reaper", { skip }, async () => {
   const { runs, ledger, close } = createPostgresRunStore(URL!);
   try {

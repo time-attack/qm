@@ -72,9 +72,27 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
         output TEXT NOT NULL, created_at BIGINT NOT NULL,
         PRIMARY KEY(run_id, attempt, call_index)
       )`,
-    `ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS attempt INT NOT NULL DEFAULT 1`,
-    `ALTER TABLE tool_calls DROP CONSTRAINT IF EXISTS tool_calls_pkey`,
-    `ALTER TABLE tool_calls ADD PRIMARY KEY (run_id, attempt, call_index)`,
+    `DO $$
+      DECLARE
+        primary_key_name TEXT;
+        primary_key_definition TEXT;
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = 'tool_calls'::regclass AND attname = 'attempt' AND NOT attisdropped
+        ) THEN
+          ALTER TABLE tool_calls ADD COLUMN attempt INT NOT NULL DEFAULT 1;
+        END IF;
+        SELECT conname, pg_get_constraintdef(oid) INTO primary_key_name, primary_key_definition
+        FROM pg_constraint
+        WHERE conrelid = 'tool_calls'::regclass AND contype = 'p';
+        IF primary_key_definition IS DISTINCT FROM 'PRIMARY KEY (run_id, attempt, call_index)' THEN
+          IF primary_key_name IS NOT NULL THEN
+            EXECUTE format('ALTER TABLE tool_calls DROP CONSTRAINT %I', primary_key_name);
+          END IF;
+          ALTER TABLE tool_calls ADD PRIMARY KEY (run_id, attempt, call_index);
+        END IF;
+      END $$`,
   ]);
 
   async function getRun(id: string): Promise<Run | null> {
