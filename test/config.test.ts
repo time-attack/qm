@@ -13,6 +13,14 @@ const productionEnv = {
   SANDBOX_BACKEND: "local",
 } as const;
 
+test("FLY_RESIDENT_ENV values become sandbox env", () => {
+  assert.deepEqual(
+    loadConfig({ FLY_RESIDENT_ENV_MY_TOOL_URL: "https://api.example.com", FLY_RESIDENT_ENV_REGION: "us-west" })
+      .sandboxEnv,
+    { MY_TOOL_URL: "https://api.example.com", REGION: "us-west" },
+  );
+});
+
 test("ORG_BRAND_* parses into a validated branding default", () => {
   assert.equal(loadConfig({}).brandingDefault, undefined);
   assert.deepEqual(

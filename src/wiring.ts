@@ -949,6 +949,7 @@ export function buildApp(
     workspace,
     files,
     sandbox,
+    sandboxEnv: config.sandboxEnv,
     connectorTokens,
     modelGateway,
     auditLog,

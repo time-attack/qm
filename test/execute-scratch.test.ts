@@ -174,7 +174,11 @@ const dm = (text: string): TurnRequest => ({
 });
 
 test("a scratch turn runs on a separate volumeless box with NO capability tokens in its env", async () => {
-  const { app } = freshApp({ signingSecret: "s3cret", apiBaseUrl: "https://core.test" });
+  const { app } = freshApp({
+    signingSecret: "s3cret",
+    apiBaseUrl: "https://core.test",
+    sandboxEnv: { SHARED_SECRET: "deployment-secret" },
+  });
 
   const scoped = await app.turn(dm("!run printenv AGENT_API_TOKEN"));
   assert.equal(scoped.status, "ok");
@@ -186,6 +190,7 @@ test("a scratch turn runs on a separate volumeless box with NO capability tokens
   const scratch = await app.turn(dm("!scratch printenv AGENT_API_TOKEN"));
   assert.equal(scratch.status, "ok");
   assert.equal(scratch.reply, "(exit 1)", "the scratch box is credential-free — no capability token");
+  assert.equal((await app.turn(dm("!scratch printenv SHARED_SECRET"))).reply, "(exit 1)");
 
   assert.ok(
     fakeSprites.names().some((n) => n.startsWith("qm-personal-u1-")),

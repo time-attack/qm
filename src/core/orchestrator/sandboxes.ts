@@ -89,6 +89,8 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     emitGapWork,
     perf,
   } = ctx;
+  const deploymentEnv = deps.sandboxEnv ?? {};
+  const turnEnv = { ...deploymentEnv, ...connectorEnv };
 
   let ownerAuthCommand: ((command: string) => string) | undefined;
   if (ownerAuthAvailable) {
@@ -198,7 +200,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
   const doProvision = async (emit: typeof emitGapWork): Promise<SandboxHandle> => {
     const provisionStart = Date.now();
     const handle = await deps.sandbox.provision(resolution.layers, {
-      env: connectorEnv,
+      env: turnEnv,
       egress: resolution.egress,
       ...(egressTokenForTurn ? { egressToken: egressTokenForTurn } : {}),
       ...(onSandboxStatus ? { onStatus: onSandboxStatus } : {}),
@@ -390,6 +392,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
           const handle = await deps.sandbox.provision(
             resolution.layers.filter((l) => l.mode === "ro" && l.mountPath === "global"),
             {
+              env: deploymentEnv,
               egress: resolution.egress,
               ...(egressTokenForTurn ? { egressToken: egressTokenForTurn } : {}),
               scratch: { key: `owner-auth:${session.id}:${transferId}` },
@@ -460,6 +463,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
         { scopeId: target, mountPath: "", mode: "rw" },
       ],
       {
+        env: deploymentEnv,
         egress: resolution.egress,
         ...(egressTokenForTurn ? { egressToken: egressTokenForTurn } : {}),
         ...(onSandboxStatus ? { onStatus: onSandboxStatus } : {}),

@@ -100,6 +100,7 @@ export interface OrchestratorDeps {
   workspace: WorkspaceStore;
   files: FileArtifactStore;
   sandbox: Sandbox;
+  sandboxEnv?: Readonly<Record<string, string>>;
   modelGateway: ModelGateway;
   auditLog: AuditLog;
   rateLimiter: RateLimiter;

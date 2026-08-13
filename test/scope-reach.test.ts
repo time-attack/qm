@@ -340,13 +340,15 @@ const channelTurn = (text: string): TurnRequest => ({
 });
 
 test("DM + directory + flag: execute(scope:#room) runs on that channel's own computer", async () => {
-  const built = freshApp({ reachExecEnabled: true });
+  const built = freshApp({ reachExecEnabled: true, sandboxEnv: { MY_TOOL_URL: "https://api.example.com" } });
   await built.directory.replaceChannels([{ channelId: "C-ph", name: "project-alpha" }]);
   const res = await built.app.turn(
-    dm("!reach #project-alpha sh -c \"echo 'still here' > smoke.txt && cat smoke.txt\""),
+    dm(
+      "!reach #project-alpha sh -c \"echo 'still here' > smoke.txt && printf '%s|' \"$MY_TOOL_URL\" && cat smoke.txt\"",
+    ),
   );
   assert.equal(res.status, "ok");
-  assert.equal(res.reply, "still here");
+  assert.equal(res.reply, "https://api.example.com|still here");
   assert.ok(
     fakeSprites.calls.some((c) => c.method === "POST" && /\/sprites\/qm-channel-c-ph-[^/]+\/exec$/.test(c.path)),
     "the command landed on the channel's computer",

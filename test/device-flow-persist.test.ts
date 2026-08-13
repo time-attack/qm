@@ -424,6 +424,7 @@ test("shared ACMECLI cutover isolates brokered STS without shrinking the existin
       dataDir: mkdtempSync(join(tmpdir(), "dfp-owner-box-")),
       signingSecret: "device-flow-test-secret",
       sharedOwnerAuthIsolation: true,
+      sandboxEnv: { MY_TOOL_URL: "https://api.example.com" },
       deploymentLayerDir: acmecliBrokeredLayer(),
     }),
     { credentialBrokers: { acmecli: acmecliBroker } },
@@ -461,12 +462,12 @@ test("shared ACMECLI cutover isolates brokered STS without shrinking the existin
     surface: "cron",
     actor: bob,
     conversation,
-    text: '!owner printf \'%s|%s|%s|%s|%s\' "$NPM_TOKEN" "$AWS_ACCESS_KEY_ID" "$(cat ~/.config/acmecorp/auth.json)" "${AGENT_API_TOKEN-unset}" "$(env | grep -q secret_BOB && echo leaked || echo clean)"; printf poisoned > ~/.config/acmecorp/auth.json',
+    text: '!owner printf \'%s|%s|%s|%s|%s|%s\' "$NPM_TOKEN" "$AWS_ACCESS_KEY_ID" "$(cat ~/.config/acmecorp/auth.json)" "${AGENT_API_TOKEN-unset}" "$(env | grep -q secret_BOB && echo leaked || echo clean)" "$MY_TOOL_URL"; printf poisoned > ~/.config/acmecorp/auth.json',
     triggered: true,
     ownerKeychainUnion: true,
   });
   assert.equal(owner.status, "ok", owner.reason);
-  assert.equal(owner.reply, "npm_BOB|AKIA_BOB_GENERAL|file_BOB|unset|clean");
+  assert.equal(owner.reply, "npm_BOB|AKIA_BOB_GENERAL|file_BOB|unset|clean|https://api.example.com");
   assert.equal(
     ff.names().some((n) => n.includes("scratch")),
     false,

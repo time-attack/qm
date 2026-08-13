@@ -33,6 +33,7 @@ export interface Config {
   securityPosture: SecurityPosture;
   sandboxBackend: "aws" | "local" | "sprites";
   sandboxSecondaryBackend?: "aws" | "local" | "sprites";
+  sandboxEnv: Record<string, string>;
   deployProvider: "docker" | "aws";
   egressServiceHosts?: string[];
   brandingDefault?: { accent?: string; mark?: string; selfLabel?: string };
@@ -582,6 +583,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error("SANDBOX_BACKEND must be set explicitly in production — use sprites, aws, or local.");
   }
   const sandboxBackend = sandboxBackendEnvStrict(env.SANDBOX_BACKEND);
+  const sandboxEnv = Object.fromEntries(
+    Object.entries(env)
+      .filter(([key, value]) => key.startsWith("FLY_RESIDENT_ENV_") && value !== undefined)
+      .map(([key, value]) => [key.slice("FLY_RESIDENT_ENV_".length), value!]),
+  );
   const secondaryRaw = env.SANDBOX_SECONDARY_BACKEND?.trim();
   let sandboxSecondaryBackend: Config["sandboxSecondaryBackend"];
   if (secondaryRaw) {
@@ -706,6 +712,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         }
       : {}),
     sandboxBackend,
+    sandboxEnv,
     ...(sandboxSecondaryBackend ? { sandboxSecondaryBackend } : {}),
     deployProvider,
     ...(env.EGRESS_SERVICE_HOSTS

@@ -440,6 +440,7 @@ test("org env-delivery credentials ride provision env under their envKey — rea
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",
+    sandboxEnv: { STEEL_API_KEY: "deployment-default" },
   });
   const { app, sandbox, serviceCreds } = buildApp(config);
   const org = scopeId("org", "default-org");
@@ -482,6 +483,26 @@ test("org env-delivery credentials ride provision env under their envKey — rea
   res = await app.turn(dm("!run echo keys", { conversation: { kind: "dm", threadRef: "dm:U1:env2" } }));
   assert.equal(res.status, "ok");
   assert.equal(captures.at(-1)?.env?.STEEL_API_KEY, "steel-rotated", "keychain is read at provision time, not boot");
+});
+
+test("deployment sandbox env rides provision env", async () => {
+  const config = testConfig({
+    dataDir: mkdtempSync(join(tmpdir(), "ap-")),
+    signingSecret: "test-secret",
+    apiBaseUrl: "https://core.example.com",
+    sandboxEnv: { MY_TOOL_URL: "https://api.example.com" },
+  });
+  const { app, sandbox } = buildApp(config);
+  let captured: ProvisionOptions | undefined;
+  const realProvision = sandbox.provision.bind(sandbox);
+  sandbox.provision = (layers, opts) => {
+    captured = opts;
+    return realProvision(layers, opts);
+  };
+
+  const res = await app.turn(dm("!run echo env"));
+  assert.equal(res.status, "ok");
+  assert.equal(captured?.env?.MY_TOOL_URL, "https://api.example.com");
 });
 
 test("a disabled or broker-delivery credential never rides provision env", async () => {
