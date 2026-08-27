@@ -311,7 +311,7 @@ test("a re-emitted tool_call with the same callId updates its row in place — n
   assert.equal(items.length, 1, "both calls and the result collapse into one row");
   assert.ok(items[0].kind === "tool");
   const row = items[0].row;
-  assert.equal((row.call?.payload as ToolPayload).liveViewUrl, "https://live.browser-use.com/x");
+  assert.equal((row.call?.payload as ToolPayload | undefined)?.liveViewUrl, "https://live.browser-use.com/x");
   assert.ok(row.result, "the result attaches to the merged row");
 });
 

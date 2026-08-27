@@ -653,9 +653,10 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       }
       const key = typeof raw === "string" ? raw.trim() : "";
       if (key) {
-        const rejected = await validateBrowserUseKey(key, {
-          ...(ctx.deps.modelCredentialFetch ? { fetchImpl: ctx.deps.modelCredentialFetch } : {}),
-        });
+        const rejected = await validateBrowserUseKey(
+          key,
+          ctx.deps.modelCredentialFetch ? { fetchImpl: ctx.deps.modelCredentialFetch } : undefined,
+        );
         if (rejected) return { error: `Browser Use rejected the key: ${rejected}` };
       }
       ctx.deps.config!.setBrowserUseKey(scope, key || null);

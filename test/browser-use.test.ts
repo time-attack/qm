@@ -39,7 +39,7 @@ test("a run resolves with the result and surfaces the live view as soon as the b
             : { id: "r1", status: "completed", result: "the top story is X", error: null },
       }),
       "POST /runs": (init) => {
-        apiKeyHeader = (init?.headers as Record<string, string>)["X-Browser-Use-API-Key"] ?? "";
+        apiKeyHeader = (init?.headers as Record<string, string> | undefined)?.["X-Browser-Use-API-Key"] ?? "";
         assert.deepEqual(JSON.parse(String(init?.body)), { task: "find the top story" });
         return { body: { id: "r1", status: "queued" } };
       },
