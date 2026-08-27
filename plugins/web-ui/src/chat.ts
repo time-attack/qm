@@ -195,6 +195,7 @@ export function createChatSurface(
   let workTicker: ReturnType<typeof setInterval> | null = null;
   let revealedTailLen = 0;
   let liveWorkExpanded = false;
+  let liveViewHidden = false;
 
   function notePendingSessionOnSend(): void {
     if (!chatState.threadRef || chatState.sessionId !== null) return;
@@ -1840,17 +1841,21 @@ export function createChatSurface(
     const work = chatState.liveWork ?? { status: "thinking", activity: [] };
     if (work.status !== "thinking" && work.status !== "working") return nothing;
     const summary = liveWorkSummary(work);
-    const expandable = Boolean(summary?.detail);
-    const expanded = expandable && liveWorkExpanded;
+    const liveViewUrl = liveWorkViewUrl(work);
+    const expandable = Boolean(summary?.detail) || Boolean(liveViewUrl);
+    const expanded = liveViewUrl ? !liveViewHidden : Boolean(summary?.detail) && liveWorkExpanded;
     let title = "";
-    if (expandable) title = liveWorkExpanded ? "Show less" : "Show more";
+    if (expandable) {
+      if (liveViewUrl) title = expanded ? "Hide the live browser" : "Show the live browser";
+      else title = expanded ? "Show less" : "Show more";
+    }
     return html`
       <section class="live-work-dock ${expanded ? "expanded" : ""}" aria-live="polite">
         <button
           type="button"
           class="live-work-line ${expandable ? "" : "static"}"
           ?disabled=${!expandable}
-          aria-expanded=${expandable ? String(liveWorkExpanded) : nothing}
+          aria-expanded=${expandable ? String(expanded) : nothing}
           title=${title}
           @click=${toggleLiveWorkExpanded}
         >
@@ -1861,12 +1866,29 @@ export function createChatSurface(
           ${summary?.detail ? html`<span class="live-work-detail">${summary.detail}</span>` : nothing}
           ${expandable ? html`<span class="live-work-toggle">${icon(ChevronRight, 14)}</span>` : nothing}
         </button>
+        ${liveViewUrl && !liveViewHidden
+          ? html`<iframe
+              class="live-view"
+              src=${liveViewUrl}
+              sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"
+              referrerpolicy="no-referrer"
+              allow="autoplay"
+            ></iframe>`
+          : nothing}
       </section>
     `;
   }
 
+  function liveWorkViewUrl(work: WorkBlock): string | null {
+    const active = activeToolRow(work);
+    const call = (active?.call?.payload ?? {}) as ToolPayload;
+    return call.tool === "browser_use" && call.liveViewUrl?.startsWith("https://") ? call.liveViewUrl : null;
+  }
+
   function toggleLiveWorkExpanded(): void {
-    liveWorkExpanded = !liveWorkExpanded;
+    const work = chatState.liveWork;
+    if (work && liveWorkViewUrl(work)) liveViewHidden = !liveViewHidden;
+    else liveWorkExpanded = !liveWorkExpanded;
     drawActiveChat();
   }
 
