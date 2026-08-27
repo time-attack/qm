@@ -71,6 +71,7 @@ export interface HarnessTurnInput {
   systemCacheBoundary?: number;
   history: SessionEntry[];
   tools: ToolContext;
+  browserUse?: boolean;
   credentialExecServices?: readonly { service: string; binary: string }[];
   screenExternalContent?(input: {
     content: string;

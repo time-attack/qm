@@ -18,6 +18,7 @@ import {
   FileText,
   Files,
   GitFork,
+  Globe,
   Maximize2,
   Paperclip,
   Pencil,
@@ -2095,6 +2096,7 @@ export function createChatSurface(
       done: "Managed process",
       attempted: "Tried managing process",
     },
+    browser_use: { icon: Globe, active: "Browsing", done: "Browsed", attempted: "Tried browsing" },
   };
   const UNKNOWN_TOOL = { icon: Wrench, active: "Working", done: "Finished step", attempted: "Tried step" };
 
@@ -2137,6 +2139,8 @@ export function createChatSurface(
         const target = call.command ? firstLine(call.command, 48) : (call.process_id ?? call.monitor_id ?? "");
         return [action, target].filter(Boolean).join(" ");
       }
+      case "browser_use":
+        return call.task ? firstLine(call.task) : "";
       default:
         return "";
     }
@@ -2171,6 +2175,18 @@ export function createChatSurface(
     const classes = ["tool-row", `tool-${kind}`].join(" ");
     const head = html`<span class="tool-icon">${icon(meta.icon, 15)}</span>
       <span class="tool-label">${label}${detail ? html` <span class="tool-detail">${detail}</span>` : nothing}</span>`;
+    if (tool === "browser_use" && kind === "running" && call.liveViewUrl?.startsWith("https://")) {
+      return html`<details class="${classes} tool-expandable" open>
+        <summary class="tool-summary">${head}${icon(ChevronRight, 14)}</summary>
+        <iframe
+          class="live-view"
+          src=${call.liveViewUrl}
+          sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"
+          referrerpolicy="no-referrer"
+          allow="autoplay"
+        ></iframe>
+      </details>`;
+    }
     if (tool === "execute" && row.result && (result.stdout || result.stderr)) {
       return html`<details class="${classes} tool-expandable">
         <summary class="tool-summary">${head}${icon(ChevronRight, 14)}</summary>

@@ -76,6 +76,7 @@ import {
   renderPendingOnboardingPrompt,
 } from "../onboarding/onboarding.ts";
 import { createToolContext, NeedsApproval, CommandDenied } from "../tools/primitives.ts";
+import { createBrowserUseRunner } from "../tools/browser-use.ts";
 import { evaluateCommandWithLayer } from "../policy/command-policy.ts";
 import { createSecretValueMasker } from "../security/secret-masking.ts";
 import { shq } from "../util/shell.ts";
@@ -1822,6 +1823,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             `[orchestrator] trigger delivery has no surface tools (missing deliveries store?) — reply would be lost session=${session.id}`,
           );
 
+        const browserUseKey =
+          strictReadOnly || !allInternal || actor.type !== "internal"
+            ? null
+            : deps.config?.getBrowserUseKey(toScopeId("org", orgId()));
         const tools = createToolContext({
           sandbox: deps.sandbox,
           provision,
@@ -1851,6 +1856,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           files: deps.files,
           auditLog: deps.auditLog,
           createdBy: actor.id,
+          ...(browserUseKey ? { browserUse: createBrowserUseRunner(browserUseKey) } : {}),
           ...(() => {
             const available =
               strictReadOnly || actor.type !== "internal"
@@ -2455,6 +2461,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             history: continuation?.history ?? history,
             tools,
             ...(tools.credentialExecServices ? { credentialExecServices: tools.credentialExecServices } : {}),
+            ...(tools.browserUse ? { browserUse: true } : {}),
             ...(securityPolicy.inboundScreening === "external" &&
             (deps.securityScreener || deps.harness.models.screenSecurity)
               ? {
