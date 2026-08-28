@@ -1,5 +1,5 @@
 import { html, render, type TemplateResult } from "lit";
-import { Activity, KeyRound, Link, LockKeyhole, Plug, Plus, RefreshCw, ShieldCheck } from "lucide";
+import { Activity, KeyRound, LockKeyhole, Plug, Plus, RefreshCw, ShieldCheck } from "lucide";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { icon } from "./ui";
@@ -499,6 +499,51 @@ function drawConnectors(loading = false): void {
       </article>
     `;
   });
+  const onePasswordCredential = keychainCredentials.find((credential) => credential.service === "1password");
+  const onePasswordCard = html`
+    <article class="kc-resource kc-account">
+      <div class="kc-resource-main">
+        ${connectorLogo("1password")}
+        <div class="kc-resource-copy">
+          <div class="kc-resource-title-row">
+            <h3>1Password</h3>
+            ${onePasswordCredential ? "" : html`<span class="kc-state neutral">Not connected</span>`}
+          </div>
+          <div class="kc-resource-meta">Vault items, fetched when needed</div>
+        </div>
+      </div>
+      <p class="kc-resource-description">
+        Lets the agent fetch credentials out of a 1Password vault you choose, at the moment a task needs them — nothing
+        from the vault is copied here.
+        <a href="https://developer.1password.com/docs/service-accounts/" target="_blank" rel="noopener noreferrer"
+          >Create a service account</a
+        >
+        scoped to that vault, then paste its token on the one-time page.
+      </p>
+      <div class="kc-resource-actions">
+        ${
+          onePasswordCredential
+            ? html`<button
+                class="kc-text-action danger"
+                type="button"
+                data-confirm-key="disconnect:1password"
+                ?disabled=${keychainOperations.mutationInFlight}
+                @click=${() => void deleteCredential(onePasswordCredential)}
+              >
+                Disconnect
+              </button>`
+            : html`<button
+                class="btn"
+                type="button"
+                ?disabled=${keychainOperations.dropInFlight}
+                @click=${() => void connectOnePassword()}
+              >
+                Connect account
+              </button>`
+        }
+      </div>
+    </article>
+  `;
   if (!appState.mainEl) return;
   const host = document.createElement("div");
   host.className = scopedSession.active ? "pane keychain-page scoped-view" : "pane keychain-page";
@@ -554,23 +599,11 @@ function drawConnectors(loading = false): void {
           <div class="kc-section-head">
             <div class="kc-section-title">
               <h2 id="kc-accounts-title">Linked accounts</h2>
-              <span>${entries.length}</span>
+              <span>${entries.length + 1}</span>
             </div>
             <p>Provider APIs the agent can use as you.</p>
           </div>
-          <div class="kc-resource-list">
-            ${
-              connectorCards.length
-                ? connectorCards
-                : html`<div class="kc-empty">
-                    ${icon(Link, 20)}
-                    <div>
-                      <strong>No accounts available</strong
-                      ><span>Your workspace has not configured any account providers yet.</span>
-                    </div>
-                  </div>`
-            }
-          </div>
+          <div class="kc-resource-list">${connectorCards}${onePasswordCard}</div>
         </section>
         <section class="kc-section" aria-labelledby="kc-credentials-title">
           <div class="kc-section-head">
@@ -768,6 +801,16 @@ async function createDrop(): Promise<void> {
       drawConnectors();
     }
   }
+}
+
+async function connectOnePassword(): Promise<void> {
+  addingCredential = {
+    service: "1password",
+    envKey: "OP_SERVICE_ACCOUNT_TOKEN",
+    purpose: "Fetch items from my 1Password vault when a task needs them",
+  };
+  secureDropUrl = null;
+  await createDrop();
 }
 
 async function startConnector(provider: string): Promise<void> {
