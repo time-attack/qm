@@ -22,7 +22,6 @@ export interface AuditLog {
     since?: number;
     resourceContains?: string;
   }): Promise<readonly AuditEvent[]>;
-  /** Count events per resource for one action — cheap source for memoized usage counts. */
   tallyByResource?(action: string): Promise<ReadonlyMap<string, number>>;
 }
 
