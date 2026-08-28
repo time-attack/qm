@@ -8,15 +8,30 @@ export interface BrowserUseOutcome {
   liveViewUrl: string | null;
 }
 
+interface BrowserUseSecretBinding {
+  alias: string;
+  value: string;
+  allowedDomains: string[];
+}
+
+interface BrowserUseToolSecret {
+  envKey: string;
+  domains: string[];
+}
+
 export interface BrowserUseRunOptions {
   signal?: AbortSignal;
   onLiveView?: (url: string) => void | Promise<void>;
   maxWallMs?: number;
   pollMs?: number;
   fetchImpl?: typeof fetch;
+  secretBindings?: BrowserUseSecretBinding[];
 }
 
-export type BrowserUseRunner = (task: string, opts?: BrowserUseRunOptions) => Promise<BrowserUseOutcome>;
+export type BrowserUseRunner = (
+  task: string,
+  opts?: Omit<BrowserUseRunOptions, "secretBindings"> & { secrets?: BrowserUseToolSecret[] },
+) => Promise<BrowserUseOutcome>;
 
 const BASE_URL = "https://api.browser-use.com/api/v4";
 const DEFAULT_POLL_MS = 3_000;
@@ -66,8 +81,50 @@ export async function validateBrowserUseKey(apiKey: string, opts?: { fetchImpl?:
   }
 }
 
-export function createBrowserUseRunner(apiKey: string): BrowserUseRunner {
-  return (task, opts) => runBrowserUseTask(apiKey, task, opts);
+function bindingDomain(raw: string): string {
+  const domain = raw.trim().toLowerCase();
+  if (!domain || /[\s/:@?#*]/.test(domain) || !/^[^.]+(\.[^.]+)+$/.test(domain)) {
+    throw new Error(`secret domains must be bare registrable hostnames like example.com, got: ${raw}`);
+  }
+  return domain;
+}
+
+export function createBrowserUseRunner(
+  apiKey: string,
+  grantedSecrets?: ReadonlyMap<string, string>,
+  hooks?: { onSecretsBound?: (bindings: { alias: string; domains: string[] }[]) => void },
+): BrowserUseRunner {
+  return async (task, opts) => {
+    const { secrets, ...rest } = opts ?? {};
+    const secretBindings = (secrets ?? []).map(({ envKey, domains }) => {
+      const value = grantedSecrets?.get(envKey);
+      if (!value) {
+        const available = [...(grantedSecrets?.keys() ?? [])].join(", ") || "(none)";
+        throw new Error(
+          `no credential is granted under env key ${envKey} on this turn (granted: ${available}); ` +
+            "find it with the keychain (list credentials, then mint a grant for your own or send an ask for someone else's) and retry once approved",
+        );
+      }
+      return { alias: envKey, value, allowedDomains: domains.map(bindingDomain) };
+    });
+    if (!secretBindings.length) return runBrowserUseTask(apiKey, task, rest);
+    hooks?.onSecretsBound?.(secretBindings.map(({ alias, allowedDomains }) => ({ alias, domains: allowedDomains })));
+    const scrub = (text: string | null): string | null => {
+      if (!text) return text;
+      let out = text;
+      for (const { alias, value } of secretBindings) out = out.split(value).join(`[secret ${alias}]`);
+      return out;
+    };
+    try {
+      const outcome = await runBrowserUseTask(apiKey, task, { ...rest, secretBindings });
+      return { ...outcome, result: scrub(outcome.result), error: scrub(outcome.error) };
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(errMessage(error));
+      err.message = scrub(err.message) ?? err.message;
+      if (typeof err.stack === "string") err.stack = scrub(err.stack) ?? err.stack;
+      throw err;
+    }
+  };
 }
 
 function liveViewUrlOf(events: unknown): string | null {
@@ -96,7 +153,20 @@ export async function runBrowserUseTask(
   const deadline = Date.now() + (opts?.maxWallMs ?? DEFAULT_MAX_WALL_MS);
   const signal = opts?.signal;
 
-  const created = await api(fetchImpl, apiKey, "POST", "/runs", { body: { task } });
+  const created = await api(fetchImpl, apiKey, "POST", "/runs", {
+    body: {
+      task,
+      ...(opts?.secretBindings?.length
+        ? {
+            secretBindings: opts.secretBindings.map(({ alias, value, allowedDomains }) => ({
+              alias,
+              source: { type: "inline", value },
+              allowedDomains,
+            })),
+          }
+        : {}),
+    },
+  });
   const runId = created.id;
   if (typeof runId !== "string" || !runId) throw new Error("Browser Use API returned a run without an id");
   let liveViewUrl: string | null = null;

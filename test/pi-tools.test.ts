@@ -2168,6 +2168,30 @@ test("browser_use is turn-scoped, records the live view on the call entry, and r
   assert.equal(emitted[2]!.payload.isError, false);
 });
 
+test("browser_use wires secrets through by name only — no value ever enters the tape", async () => {
+  const emitted: Emitted[] = [];
+  let received: unknown = null;
+  const tc: ToolContext = {
+    ...fakeToolContext(),
+    async browserUse(_task, opts) {
+      received = (opts as { secrets?: unknown }).secrets;
+      return { status: "completed", result: "signed in", error: null, liveViewUrl: null };
+    },
+  };
+  const ref: ToolContextRef = {
+    current: tc,
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+    scopeLabel: "personal:U1",
+  };
+  const tool = createPiTools(ref).find((candidate) => candidate.name === "browser_use")!;
+  await call(tool, { task: "sign in using the secret ACME_PASSWORD", secrets: [{ env_key: "ACME_PASSWORD", domains: ["acme.com"] }] });
+  assert.deepEqual(received, [{ envKey: "ACME_PASSWORD", domains: ["acme.com"] }]);
+  assert.deepEqual(emitted[0]!.payload.secrets, [{ envKey: "ACME_PASSWORD", domains: ["acme.com"] }]);
+  assert.equal(JSON.stringify(emitted).includes("hunter2"), false);
+});
+
 test("browser_use reports a failed run as a tool error and still records the call without a live view", async () => {
   const emitted: Emitted[] = [];
   const tc: ToolContext = {

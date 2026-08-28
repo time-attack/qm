@@ -1057,6 +1057,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         ownerAuthAvailable = true;
       }
       const connectorEnv: Record<string, string> = {};
+      const grantedEnvSecrets = new Map<string, string>();
       const ownerAuthEnv: Record<string, string> = {};
       const ownerEnvCredentialIds: string[] = [];
       const keychainInjected: MaterializedEnvCred[] = [];
@@ -1075,7 +1076,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }
         for (const m of [...own, ...(await deps.keychain.materializeStanding(scopeId))]) {
           const injected = m.env.filter(({ key }) => !(key in connectorEnv));
-          for (const { key, value } of injected) connectorEnv[key] = value;
+          for (const { key, value } of injected) {
+            connectorEnv[key] = value;
+            grantedEnvSecrets.set(key, value);
+          }
           if (m.grantId && injected.length) {
             keychainInjected.push({ ...m, env: injected });
             deps.auditLog.record({
@@ -1143,8 +1147,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           )
             continue;
           const rec = await deps.serviceCreds.getServiceCredentialSecret(orgScope, cred.slug);
-          if (rec?.secret && rec.delivery === "env" && rec.enabled && rec.envKey === cred.envKey)
+          if (rec?.secret && rec.delivery === "env" && rec.enabled && rec.envKey === cred.envKey) {
             connectorEnv[cred.envKey] = rec.secret;
+            grantedEnvSecrets.set(cred.envKey, rec.secret);
+          }
         }
         const browseSteps = deps.config?.getBrowseMaxSteps(toScopeId("org", orgId()));
         if (browseSteps && !("BROWSE_LAB_MAX_STEPS" in connectorEnv))
@@ -1856,7 +1862,20 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           files: deps.files,
           auditLog: deps.auditLog,
           createdBy: actor.id,
-          ...(browserUseKey ? { browserUse: createBrowserUseRunner(browserUseKey) } : {}),
+          ...(browserUseKey
+            ? {
+                browserUse: createBrowserUseRunner(browserUseKey, grantedEnvSecrets, {
+                  onSecretsBound: (bindings) =>
+                    deps.auditLog.record({
+                      at: Date.now(),
+                      principalId: actor.id,
+                      action: "browser_use.secrets_bound",
+                      resource: bindings.map((b) => `${b.alias} on ${b.domains.join("|")}`).join(", "),
+                      scopeLabel: scopeId,
+                    }),
+                }),
+              }
+            : {}),
           ...(() => {
             const available =
               strictReadOnly || actor.type !== "internal"

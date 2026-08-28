@@ -209,3 +209,79 @@ test("the browser use key round-trips encrypted, survives a restart, and clears"
   assert.equal(b.getBrowserUseKey(org), null);
   await settle(async () => !(await browserUseKeys.get(org)));
 });
+
+test("the runner resolves granted secrets into domain-pinned bindings the model never sees", async () => {
+  const { createBrowserUseRunner } = await import("../src/tools/browser-use.ts");
+  let body: Record<string, unknown> = {};
+  let polls = 0;
+  const fetchImpl = fakeApi({
+    "GET /runs/r9/events": () => ({ body: { events: [] } }),
+    "GET /runs/r9": () => ({ body: { id: "r9", status: ++polls < 2 ? "running" : "completed", result: "signed in", error: null } }),
+    "POST /runs": (init) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return { body: { id: "r9", status: "queued" } };
+    },
+  });
+  const runner = createBrowserUseRunner("bu_key", new Map([["ACME_PASSWORD", "hunter2"]]));
+  const outcome = await runner("sign in to acme using the secret ACME_PASSWORD", {
+    fetchImpl,
+    pollMs: 1,
+    secrets: [{ envKey: "ACME_PASSWORD", domains: ["Acme.com "] }],
+  });
+  assert.equal(outcome.status, "completed");
+  assert.deepEqual(body.secretBindings, [
+    { alias: "ACME_PASSWORD", source: { type: "inline", value: "hunter2" }, allowedDomains: ["acme.com"] },
+  ]);
+});
+
+test("an ungranted secret fails fast, naming the granted keys and the keychain flow", async () => {
+  const { createBrowserUseRunner } = await import("../src/tools/browser-use.ts");
+  const runner = createBrowserUseRunner("bu_key", new Map([["OTHER_KEY", "x"]]));
+  await assert.rejects(
+    runner("task", { secrets: [{ envKey: "ACME_PASSWORD", domains: ["acme.com"] }] }),
+    (e: Error) => /no credential is granted under env key ACME_PASSWORD/.test(e.message) && /OTHER_KEY/.test(e.message) && /keychain/.test(e.message),
+  );
+});
+
+test("secret domains must be bare registrable hostnames", async () => {
+  const { createBrowserUseRunner } = await import("../src/tools/browser-use.ts");
+  const runner = createBrowserUseRunner("bu_key", new Map([["K", "v"]]));
+  for (const domain of ["https://acme.com/login", "com", "acme..com", ".acme.com", "*.acme.com"]) {
+    await assert.rejects(runner("task", { secrets: [{ envKey: "K", domains: [domain] }] }), /bare registrable hostnames/);
+  }
+});
+
+test("a provider error that echoes a bound secret is scrubbed before it can reach the transcript", async () => {
+  const { createBrowserUseRunner } = await import("../src/tools/browser-use.ts");
+  const fetchImpl = fakeApi({
+    "POST /runs": () => ({
+      status: 422,
+      body: { detail: [{ loc: ["secretBindings", 0], input: { source: { value: "hunter2" } } }] },
+    }),
+  });
+  const runner = createBrowserUseRunner("bu_key", new Map([["ACME_PASSWORD", "hunter2"]]));
+  await assert.rejects(
+    runner("task", { fetchImpl, pollMs: 1, secrets: [{ envKey: "ACME_PASSWORD", domains: ["acme.com"] }] }),
+    (e: Error) => !e.message.includes("hunter2") && e.message.includes("[secret ACME_PASSWORD]"),
+  );
+});
+
+test("a run result that echoes a bound secret is scrubbed", async () => {
+  const { createBrowserUseRunner } = await import("../src/tools/browser-use.ts");
+  const fetchImpl = fakeApi({
+    "GET /runs/r10/events": () => ({ body: { events: [] } }),
+    "GET /runs/r10": () => ({
+      body: { id: "r10", status: "completed", result: "typed hunter2 into the form", error: null },
+    }),
+    "POST /runs": () => ({ body: { id: "r10", status: "queued" } }),
+  });
+  const bound: unknown[] = [];
+  const runner = createBrowserUseRunner("bu_key", new Map([["ACME_PASSWORD", "hunter2"]]), {
+    onSecretsBound: (bindings) => {
+      bound.push(...bindings);
+    },
+  });
+  const outcome = await runner("task", { fetchImpl, pollMs: 1, secrets: [{ envKey: "ACME_PASSWORD", domains: ["acme.com"] }] });
+  assert.equal(outcome.result, "typed [secret ACME_PASSWORD] into the form");
+  assert.deepEqual(bound, [{ alias: "ACME_PASSWORD", domains: ["acme.com"] }]);
+});

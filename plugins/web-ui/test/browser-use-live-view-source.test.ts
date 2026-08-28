@@ -26,7 +26,7 @@ test("a settled browser_use row never renders the iframe — the live URL is dea
 test("the live work dock shows the browser while streaming, open by default and collapsible", () => {
   assert.match(chat, /function liveWorkViewUrl\(work: WorkBlock\): string \| null \{/);
   assert.match(chat, /call\.tool === "browser_use" && call\.liveViewUrl\?\.startsWith\("https:\/\/"\) \? call\.liveViewUrl : null/);
-  const dock = chat.match(/function liveWorkDock\(agent: Agent\)[\s\S]*?\n  \}/)?.[0];
+  const dock = chat.match(/function liveWorkDock\(agent: Agent\)[\s\S]*?\n {2}\}/)?.[0];
   assert.ok(dock, "liveWorkDock exists");
   assert.match(dock, /liveViewUrl && !liveViewHidden/);
   assert.match(dock, /sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"/);
