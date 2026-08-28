@@ -162,5 +162,3 @@ export function createCodexDeviceLogin(opts: { binaryPath?: string; env?: NodeJS
     },
   };
 }
-
-export type CodexDeviceLogin = ReturnType<typeof createCodexDeviceLogin>;

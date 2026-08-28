@@ -135,7 +135,7 @@ export function claudeChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.
   return env;
 }
 
-export function perUserClaudeEnv(env: NodeJS.ProcessEnv, oauthToken: string | undefined): NodeJS.ProcessEnv {
+function perUserClaudeEnv(env: NodeJS.ProcessEnv, oauthToken: string | undefined): NodeJS.ProcessEnv {
   if (!oauthToken) return env;
   const scoped = { ...env };
   delete scoped.ANTHROPIC_API_KEY;

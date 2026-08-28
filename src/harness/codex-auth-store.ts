@@ -1,10 +1,5 @@
 import { CODEX_OAUTH_ISSUER, asObject, codexOAuthJwtAccountId, type JsonObject } from "./codex-auth-file.ts";
-import {
-  codexOAuthAccessToken,
-  codexOAuthRefreshToken,
-  readCodexOAuthAuthFile,
-  sanitizedCodexOAuthAuth,
-} from "./codex-auth-file.ts";
+import { codexOAuthRefreshToken, readCodexOAuthAuthFile, sanitizedCodexOAuthAuth } from "./codex-auth-file.ts";
 import type { CredentialFile, Keychain } from "../credentials/keychain.ts";
 import { swallow } from "../util/errors.ts";
 import { acquireCodexOAuthAuthLock, writeCodexOAuthAuthFile } from "./codex-auth.ts";
@@ -28,7 +23,7 @@ export interface CodexAuthStore {
 }
 
 /** The Codex CLI's public OAuth client id (auth.openai.com device/PKCE client). */
-export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 /** Refresh when the access token has less than this long to live. */
 const REFRESH_SKEW_MS = 5 * 60_000;
@@ -287,5 +282,3 @@ export function fileCodexAuthStore(
     },
   };
 }
-
-export { codexOAuthAccessToken, codexOAuthRefreshToken };

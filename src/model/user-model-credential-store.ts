@@ -1,7 +1,7 @@
 import type { DerivedOAuthAuth, Keychain } from "../credentials/keychain.ts";
 import type { ModelProvider } from "./pi-models.ts";
 
-export type UserCredentialKind = "apikey" | "oauth";
+type UserCredentialKind = "apikey" | "oauth";
 
 export interface UserOAuthTokens {
   accessToken: string;
@@ -20,7 +20,7 @@ export interface UserModelCredential {
   updatedAt: number;
 }
 
-export interface UserCredentialConnection {
+interface UserCredentialConnection {
   provider: ModelProvider;
   kind: UserCredentialKind;
 }
