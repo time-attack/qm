@@ -24,7 +24,13 @@ import {
   syncCodexOAuthAuthFile,
   type CodexOAuthAuthLock,
 } from "./codex-auth.ts";
-import { defineHarness, type Harness, type HarnessTurnInput, type HarnessTurnResult } from "./harness.ts";
+import {
+  defineHarness,
+  type CodexTurnAuth,
+  type Harness,
+  type HarnessTurnInput,
+  type HarnessTurnResult,
+} from "./harness.ts";
 import { coreToolOptions, createPiTools, type PiToolsOptions, type ToolContextRef } from "./pi-tools.ts";
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { reconstructMessagesFromHistory, seedPriorTurns, type PiReplayMessage } from "./replay.ts";
@@ -279,9 +285,22 @@ export function codexChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.P
   return env;
 }
 
-export function prepareCodexHome(source: NodeJS.ProcessEnv, jail: string): string {
+export function prepareCodexHome(source: NodeJS.ProcessEnv, jail: string, userAuth?: CodexTurnAuth): string {
   const target = join(jail, "codex-home");
   mkdirSync(target, { recursive: true });
+  if (userAuth) {
+    const auth = {
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: userAuth.accessToken,
+        refresh_token: userAuth.refreshToken,
+        ...(userAuth.idToken ? { id_token: userAuth.idToken } : {}),
+        ...(userAuth.accountId ? { account_id: userAuth.accountId } : {}),
+      },
+    };
+    writeFileSync(join(target, "auth.json"), JSON.stringify(sanitizedCodexOAuthAuth(auth)), { mode: 0o600 });
+    return target;
+  }
   const authPath = codexAuthFileForEnv(source, true);
   const oauthAuth = authPath ? readCodexOAuthAuthFile(authPath) : null;
   if (oauthAuth) {
@@ -296,6 +315,12 @@ export function prepareCodexHome(source: NodeJS.ProcessEnv, jail: string): strin
     );
   }
   return target;
+}
+
+function codexTokenField(auth: unknown, field: string): string | undefined {
+  const tokens = (auth as { tokens?: Record<string, unknown> })?.tokens;
+  const value = tokens?.[field];
+  return typeof value === "string" && value ? value : undefined;
 }
 
 async function transitionTask(
@@ -930,6 +955,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
     let expectedRefreshToken: string | undefined;
     let expectedAccessToken: string | undefined;
     let expectedSourceAuth: Record<string, unknown> | undefined;
+    let perUserCodexActive = false;
     let turnAuthReleased = false;
     const releaseTurnAuth = async (): Promise<void> => {
       if (turnAuthReleased) return;
@@ -937,7 +963,21 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
       const lock = turnAuthLock;
       if (!lock) return;
       try {
-        if (
+        if (perUserCodexActive && turn.onCodexAuthRefresh) {
+          const refreshed = readCodexOAuthAuthFile(join(rt.jail, "codex-home", "auth.json"));
+          const access = refreshed ? codexOAuthAccessToken(refreshed) : undefined;
+          const refresh = refreshed ? codexOAuthRefreshToken(refreshed) : undefined;
+          if (refreshed && access && refresh) {
+            await turn.onCodexAuthRefresh({
+              accessToken: access,
+              refreshToken: refresh,
+              ...(codexTokenField(refreshed, "id_token") ? { idToken: codexTokenField(refreshed, "id_token")! } : {}),
+              ...(codexTokenField(refreshed, "account_id")
+                ? { accountId: codexTokenField(refreshed, "account_id")! }
+                : {}),
+            });
+          }
+        } else if (
           lock.isHeld() &&
           !(await rt.persistAuth(expectedRefreshToken, expectedAccessToken, lock.path, expectedSourceAuth))
         )
@@ -969,6 +1009,40 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
       throw error;
     };
     try {
+      if (turn.codexAuth) {
+        while (true) {
+          if (Date.now() >= runtimeRecoveryDeadline)
+            throw new NonRetryableTurnError("Codex OAuth runtime recovery timed out");
+          const authLockPromise = acquireCodexOAuthAuthLock(
+            join(rt.jail, "codex-home", "auth.json"),
+            AbortSignal.any([closeAbort.signal, authAcquireAbort.signal]),
+            Math.min(120_000, Math.max(1, runtimeRecoveryDeadline - Date.now())),
+          );
+          try {
+            turnAuthLock = await awaitSetup(authLockPromise);
+          } catch (error) {
+            void authLockPromise.then(
+              (lock) => lock.release().catch((releaseError) => swallow("codex: oauth lock release", releaseError)),
+              () => undefined,
+            );
+            throw error;
+          }
+          if (runtime !== rt || rt.server.process.exitCode !== null) {
+            await turnAuthLock.release();
+            turnAuthLock = undefined;
+            if (authAcquireAbort.signal.aborted) throw setupCancelled;
+            rt = await awaitSetup(
+              ensureRuntime((release) => {
+                releaseStartupWaiter = release;
+              }, runtimeRecoveryDeadline),
+            );
+            continue;
+          }
+          prepareCodexHome(sourceEnv, rt.jail, turn.codexAuth);
+          perUserCodexActive = true;
+          break;
+        }
+      } else {
       const sourceAuth = authPath ? readCodexOAuthAuthFile(authPath) : null;
       if (oauthConfigured && !sourceAuth) {
         rmSync(join(rt.jail, "codex-home", "auth.json"), { force: true });
@@ -1018,6 +1092,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
           activeExpectedSourceAuth = expectedSourceAuth;
           break;
         }
+      }
       }
     } catch (error) {
       return failSetup(error);

@@ -13,7 +13,7 @@ test("scope-default buttons render when any runtime setting differs from the sco
 });
 
 test("composer-right keeps its control order: make default, use org default, model, harness, send", () => {
-  const right = composer.slice(composer.indexOf('class="composer-right"'));
+  const right = composer.slice(composer.indexOf("let runtimeControls"));
   const makeDefault = right.indexOf("Make default");
   const orgDefault = right.indexOf("Use org default");
   const model = right.indexOf('kind: "model"');

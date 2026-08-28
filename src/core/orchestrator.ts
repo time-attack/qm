@@ -134,6 +134,11 @@ import { LRUCache } from "lru-cache";
 import type { SkillResolution, GrantedSkillRef } from "../skills/skill-store.ts";
 import type { Orchestrator, OrchestratorDeps, OrchestratorInput } from "./orchestrator/types.ts";
 import { resolveModel } from "../model/pi-models.ts";
+import type { ProviderKeys } from "../harness/pi-harness.ts";
+import type { CodexTurnAuth } from "../harness/harness.ts";
+import type { UserModelCredentialStore, UserOAuthTokens } from "../model/user-model-credential-store.ts";
+import { refreshChatGPTTokens, refreshClaudeTokens } from "../model/subscription-oauth.ts";
+import { resolveIndividualAuthRouting } from "./individual-auth-routing.ts";
 import {
   MAX_AUTO_ATTACHMENT_SCREEN_BYTES,
   approvalGrantId,
@@ -178,6 +183,41 @@ const ACTIVITY_ENTRY_TYPES = new Set<EntryType>(["tool_call", "tool_result", "ap
 function knownBrowseModel(id: string | null | undefined): { id: string; provider: string } | undefined {
   const provider = id ? resolveModel(id)?.provider : undefined;
   return id && provider ? { id, provider } : undefined;
+}
+
+function oauthExpiringSoon(tokens: UserOAuthTokens): boolean {
+  return typeof tokens.expiresAt === "number" && tokens.expiresAt < Date.now() + 60_000 && !!tokens.refreshToken;
+}
+
+async function freshClaudeAccessToken(
+  store: UserModelCredentialStore,
+  userId: string,
+  tokens: UserOAuthTokens,
+): Promise<string> {
+  if (!oauthExpiringSoon(tokens)) return tokens.accessToken;
+  const refreshed = await refreshClaudeTokens(tokens.refreshToken!);
+  await store.setOAuth(userId, "anthropic", refreshed);
+  return refreshed.accessToken;
+}
+
+async function freshCodexTurnAuth(
+  store: UserModelCredentialStore,
+  userId: string,
+  tokens: UserOAuthTokens,
+): Promise<CodexTurnAuth | undefined> {
+  let current = tokens;
+  if (oauthExpiringSoon(tokens)) {
+    current = await refreshChatGPTTokens(tokens.refreshToken!);
+    await store.setOAuth(userId, "openai", current);
+  }
+  if (!current.idToken || !current.refreshToken) return undefined;
+  return {
+    accessToken: current.accessToken,
+    refreshToken: current.refreshToken,
+    idToken: current.idToken,
+    ...(current.accountId ? { accountId: current.accountId } : {}),
+    ...(current.expiresAt ? { expiresAt: current.expiresAt } : {}),
+  };
 }
 
 const SHARED_CORE_MD = loadProtocolFile("shared-core");
@@ -2314,6 +2354,47 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const wantsOrgFastMode =
           typeof input.fastMode !== "boolean" && humanTurn && (await deps.config?.getInteractiveFastModeDurable());
         const effectiveFastMode = resolveTurnFastMode(input.fastMode, humanTurn, wantsOrgFastMode === true);
+        let userProviderKeys: ProviderKeys | undefined;
+        let userModelOverride: string | undefined;
+        let userHarnessOverride: string | undefined;
+        let claudeOauthToken: string | undefined;
+        let codexTurnAuth: CodexTurnAuth | undefined;
+        const userCredStore = deps.userModelCredentials;
+        if (userCredStore && (await deps.config?.getIndividualModelAuthDurable())) {
+          const [anthCred, oaiCred] = await Promise.all([
+            userCredStore.get(actor.id, "anthropic"),
+            userCredStore.get(actor.id, "openai"),
+          ]);
+          const routing = resolveIndividualAuthRouting(anthCred ?? null, oaiCred ?? null, input.model);
+          userProviderKeys = {};
+          if (routing?.kind === "apikey") {
+            userHarnessOverride = "pi";
+            userProviderKeys = { [routing.provider]: routing.apiKey };
+            userModelOverride = routing.model;
+          } else if (routing?.kind === "oauth" && routing.provider === "anthropic" && anthCred?.oauth) {
+            claudeOauthToken = await freshClaudeAccessToken(userCredStore, actor.id, anthCred.oauth);
+            userHarnessOverride = routing.harness;
+            userModelOverride = routing.model;
+            userProviderKeys = undefined;
+          } else if (routing?.kind === "oauth" && routing.provider === "openai" && oaiCred?.oauth) {
+            codexTurnAuth = await freshCodexTurnAuth(userCredStore, actor.id, oaiCred.oauth);
+            if (codexTurnAuth) {
+              userHarnessOverride = routing.harness;
+              userModelOverride = routing.model;
+              userProviderKeys = undefined;
+            }
+          }
+        }
+        const effectiveModel = userModelOverride ?? input.model;
+        const effectiveHarness = userHarnessOverride ?? input.harness;
+        if (userHarnessOverride) {
+          let authLabel = "api-key";
+          if (claudeOauthToken) authLabel = "claude-oauth";
+          else if (codexTurnAuth) authLabel = "codex-oauth";
+          console.log(
+            `[individual-auth] user=${actor.id} harness=${userHarnessOverride} model=${effectiveModel} auth=${authLabel}`,
+          );
+        }
         const runHarnessTurn = (
           harnessInput: string,
           extras: {
@@ -2338,6 +2419,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           }
           return deps.harness.turns.runTurn({
             session,
+            ...(userProviderKeys ? { providerKeys: userProviderKeys } : {}),
+            ...(claudeOauthToken ? { claudeOauthToken } : {}),
+            ...(codexTurnAuth
+              ? {
+                  codexAuth: codexTurnAuth,
+                  onCodexAuthRefresh: (t: CodexTurnAuth) => userCredStore!.setOAuth(actor.id, "openai", t),
+                }
+              : {}),
             ...(input.runId ? { runId: input.runId } : {}),
             ...(input.cancel ? { cancel: input.cancel } : {}),
             input: harnessInput,
@@ -2348,8 +2437,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ...(extras.overheard?.length ? { overheard: extras.overheard } : {}),
             ...(extras.attachments?.length ? { attachments: extras.attachments } : {}),
             ...(extras.images?.length ? { images: extras.images } : {}),
-            ...(input.harness ? { harness: input.harness } : {}),
-            ...(input.model ? { model: input.model } : {}),
+            ...(effectiveHarness ? { harness: effectiveHarness } : {}),
+            ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
             ...(typeof effectiveFastMode === "boolean" ? { fastMode: effectiveFastMode } : {}),
             ...(strictReadOnly ? { readOnly: true } : {}),

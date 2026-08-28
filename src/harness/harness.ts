@@ -10,6 +10,7 @@ import type {
 } from "../sessions/session-store.ts";
 export type { GapWork } from "../sessions/session-store.ts";
 import type { OverheardEntryPayload } from "./replay.ts";
+import type { ProviderKeys } from "./pi-harness.ts";
 import type { ToolContext } from "../tools/primitives.ts";
 import type { SecurityScreenVerdict } from "../security/security-posture.ts";
 
@@ -44,6 +45,14 @@ interface HarnessSecurityScreenInput {
   signal: AbortSignal;
   recordModelCall(rec: { model: string; inputTokens: number; entryCount: number }): void;
   recordLlmRequest?(rec: HarnessLlmRequestRecord, signal?: AbortSignal): void | Promise<void>;
+}
+
+export interface CodexTurnAuth {
+  accessToken: string;
+  refreshToken: string;
+  idToken?: string;
+  accountId?: string;
+  expiresAt?: number;
 }
 
 export interface HarnessTurnInput {
@@ -85,6 +94,10 @@ export interface HarnessTurnInput {
   tapeFold?: unknown[];
   scopeLabel: ScopeId;
   orgScopeId: ScopeId;
+  providerKeys?: ProviderKeys;
+  claudeOauthToken?: string;
+  codexAuth?: CodexTurnAuth;
+  onCodexAuthRefresh?: (tokens: CodexTurnAuth) => void | Promise<void>;
   recordModelCall(rec: { model: string; inputTokens: number; entryCount: number }): void;
   recordLlmRequest?(rec: HarnessLlmRequestRecord, signal?: AbortSignal): void | Promise<void>;
   onProgress?(p: { toolCalls: number; tokens?: number }): void;

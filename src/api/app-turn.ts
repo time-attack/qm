@@ -123,6 +123,7 @@ export function createTurnMethods(
         return (await deps.projects.withVersion(conversationRef, projectVersion, fn)) ?? null;
       }
 
+      const individualAuth = !!deps.userModelCredentials && (await deps.config.getIndividualModelAuthDurable());
       if (req.surface === "web") {
         const threadRef = req.conversation.threadRef;
         const existing = await deps.sessions.getByThread(threadRef);
@@ -147,6 +148,7 @@ export function createTurnMethods(
           harnessId: fallbackHarness,
           modelId: defaultModelForHarness(fallbackHarness),
         };
+        if (!individualAuth) {
         const configuredKeys = deps.providerKeys ??
           deps.modelProviders ?? { anthropic: false, openai: false, openrouter: false };
         const managedKeys = deps.modelCredentials ? await deps.modelCredentials.availability() : configuredKeys;
@@ -203,6 +205,7 @@ export function createTurnMethods(
           validateWebTurnModelOptions(req, enabledWebuiModels, providers) ??
           webTurnRuntimeModelRefusal(runtime.modelId, orgRuntime.modelId, configuredWebuiModels);
         if (invalidModelOption) return { status: "refused", reason: invalidModelOption };
+        }
       }
 
       const rawAudience = req.conversation.audience ?? [req.actor];
@@ -251,8 +254,8 @@ export function createTurnMethods(
         ...(req.detectOpener ? { detectOpener: req.detectOpener } : {}),
         ...(req.attachments?.length ? { attachments: req.attachments } : {}),
         ...(req.inboundNotes?.length ? { inboundNotes: req.inboundNotes } : {}),
-        ...(req.harness ? { harness: req.harness } : {}),
-        ...(req.model ? { model: req.model } : {}),
+        ...(!individualAuth && req.harness ? { harness: req.harness } : {}),
+        ...(!individualAuth && req.model ? { model: req.model } : {}),
         ...turnModelOptions(req),
         ...(req.readOnly ? { readOnly: true } : {}),
         ...(req.skipMemory ? { skipMemory: true } : {}),
