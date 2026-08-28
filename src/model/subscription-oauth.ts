@@ -4,9 +4,6 @@ import type { UserOAuthTokens } from "./user-model-credential-store.ts";
 
 const CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CHATGPT_SCOPE = "openid profile email offline_access";
-const CHATGPT_DEVICE_API = `${CODEX_OAUTH_ISSUER}/api/accounts`;
-const CHATGPT_DEVICE_REDIRECT = `${CODEX_OAUTH_ISSUER}/deviceauth/callback`;
-const CHATGPT_DEVICE_VERIFICATION = `${CODEX_OAUTH_ISSUER}/codex/device`;
 
 const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const CLAUDE_AUTHORIZE = "https://claude.ai/oauth/authorize";
@@ -42,73 +39,6 @@ export interface ChatGPTDevicePrompt {
   verificationUrl: string;
   intervalMs: number;
   expiresAt: number;
-}
-
-export async function startChatGPTDeviceLogin(): Promise<ChatGPTDevicePrompt> {
-  const res = await fetch(`${CHATGPT_DEVICE_API}/deviceauth/usercode`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ client_id: CHATGPT_CLIENT_ID }),
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`device code request failed (${res.status})`);
-  const raw = (await res.json()) as { device_auth_id?: string; user_code?: string; usercode?: string; interval?: number };
-  const userCode = raw.user_code ?? raw.usercode;
-  if (!raw.device_auth_id || !userCode) throw new Error("device code response missing fields");
-  return {
-    deviceAuthId: raw.device_auth_id,
-    userCode,
-    verificationUrl: CHATGPT_DEVICE_VERIFICATION,
-    intervalMs: (raw.interval && raw.interval > 0 ? raw.interval : 5) * 1000,
-    expiresAt: Date.now() + 15 * 60 * 1000,
-  };
-}
-
-export async function pollChatGPTDeviceLogin(
-  deviceAuthId: string,
-  userCode: string,
-): Promise<UserOAuthTokens | "pending"> {
-  const res = await fetch(`${CHATGPT_DEVICE_API}/deviceauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ device_auth_id: deviceAuthId, user_code: userCode }),
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (res.status === 403 || res.status === 404 || res.status === 429) return "pending";
-  if (!res.ok) throw new Error(`device poll failed (${res.status})`);
-  const raw = (await res.json()) as { authorization_code?: string; code_verifier?: string };
-  if (!raw.authorization_code || !raw.code_verifier) return "pending";
-  return exchangeChatGPTCode(raw.authorization_code, raw.code_verifier);
-}
-
-async function exchangeChatGPTCode(code: string, codeVerifier: string): Promise<UserOAuthTokens> {
-  const res = await fetch(`${CODEX_OAUTH_ISSUER}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: CHATGPT_CLIENT_ID,
-      code,
-      code_verifier: codeVerifier,
-      redirect_uri: CHATGPT_DEVICE_REDIRECT,
-    }),
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`chatgpt token exchange failed (${res.status})`);
-  const raw = (await res.json()) as {
-    access_token?: string;
-    refresh_token?: string;
-    id_token?: string;
-    expires_in?: number;
-  };
-  if (!raw.access_token) throw new Error("chatgpt token response missing access_token");
-  return {
-    accessToken: raw.access_token,
-    refreshToken: raw.refresh_token,
-    idToken: raw.id_token,
-    accountId: chatgptAccountId({ idToken: raw.id_token, accessToken: raw.access_token }),
-    expiresAt: tokenExpiry(raw),
-  };
 }
 
 export async function refreshChatGPTTokens(refreshToken: string): Promise<UserOAuthTokens> {

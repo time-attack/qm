@@ -1,10 +1,6 @@
 import type { ModelProvider } from "../../model/pi-models.ts";
-import {
-  completeClaudeLogin,
-  pollChatGPTDeviceLogin,
-  startChatGPTDeviceLogin,
-  startClaudeLogin,
-} from "../../model/subscription-oauth.ts";
+import { completeClaudeLogin, startClaudeLogin } from "../../model/subscription-oauth.ts";
+import { createCodexDeviceLogin } from "../../model/codex-device-login.ts";
 import { errMessage } from "../../util/errors.ts";
 import { sendJson } from "../http.ts";
 import { validateProviderApiKey } from "./admin/model-providers.ts";
@@ -40,7 +36,12 @@ async function disconnect(ctx: ApiCtx): Promise<void> {
   const provider = connectProvider(bodyObj(ctx).provider);
   if (!provider) return sendJson(ctx.res, 400, { error: "bad_request", message: "provider must be claude or chatgpt" });
   await ctx.deps.userModelCredentials.delete(principal, provider);
-  audit(ctx.deps, { principalId: principal, action: "user-model-auth.disconnect", resource: provider, scopeLabel: principal });
+  audit(ctx.deps, {
+    principalId: principal,
+    action: "user-model-auth.disconnect",
+    resource: provider,
+    scopeLabel: principal,
+  });
   return sendJson(ctx.res, 200, { ok: true });
 }
 
@@ -57,14 +58,24 @@ async function putApiKey(ctx: ApiCtx): Promise<void> {
     return sendJson(ctx.res, 400, { error: "invalid_api_key", message: `${provider} rejected this API key` });
   }
   await ctx.deps.userModelCredentials.setApiKey(principal, provider, apiKey);
-  audit(ctx.deps, { principalId: principal, action: "user-model-auth.api-key", resource: provider, scopeLabel: principal });
+  audit(ctx.deps, {
+    principalId: principal,
+    action: "user-model-auth.api-key",
+    resource: provider,
+    scopeLabel: principal,
+  });
   return sendJson(ctx.res, 200, { ok: true });
 }
+
+// ChatGPT device-code login is delegated to the vendored Codex binary's own
+// login RPCs (supported, version-matched surface) rather than a hand-rolled
+// flow against undocumented endpoints.
+const codexDeviceLogin = createCodexDeviceLogin();
 
 async function chatgptStart(ctx: ApiCtx): Promise<void> {
   if (!caller(ctx)) return sendJson(ctx.res, 401, { error: "unauthorized" });
   try {
-    const prompt = await startChatGPTDeviceLogin();
+    const prompt = await codexDeviceLogin.start();
     return sendJson(ctx.res, 200, prompt);
   } catch (e) {
     return sendJson(ctx.res, 502, { error: "oauth_start_failed", message: errMessage(e) });
@@ -77,13 +88,17 @@ async function chatgptPoll(ctx: ApiCtx): Promise<void> {
   if (!ctx.deps.userModelCredentials) return sendJson(ctx.res, 404, { error: "not_found" });
   const body = bodyObj(ctx);
   const deviceAuthId = typeof body.deviceAuthId === "string" ? body.deviceAuthId : "";
-  const userCode = typeof body.userCode === "string" ? body.userCode : "";
-  if (!deviceAuthId || !userCode) return sendJson(ctx.res, 400, { error: "bad_request" });
+  if (!deviceAuthId) return sendJson(ctx.res, 400, { error: "bad_request" });
   try {
-    const result = await pollChatGPTDeviceLogin(deviceAuthId, userCode);
+    const result = await codexDeviceLogin.poll(deviceAuthId);
     if (result === "pending") return sendJson(ctx.res, 200, { status: "pending" });
     await ctx.deps.userModelCredentials.setOAuth(principal, "openai", result);
-    audit(ctx.deps, { principalId: principal, action: "user-model-auth.oauth", resource: "openai", scopeLabel: principal });
+    audit(ctx.deps, {
+      principalId: principal,
+      action: "user-model-auth.oauth",
+      resource: "openai",
+      scopeLabel: principal,
+    });
     return sendJson(ctx.res, 200, { status: "connected" });
   } catch (e) {
     return sendJson(ctx.res, 502, { error: "oauth_poll_failed", message: errMessage(e) });
