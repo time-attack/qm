@@ -7658,6 +7658,7 @@ h3.ambient-field-label {
   width: 22px;
   height: 22px;
   border-radius: 6px;
+}
 
 .mc-panel {
   width: 520px;
@@ -7696,7 +7697,9 @@ h3.ambient-field-label {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--secondary);
-  transition: border-color 140ms ease, background 140ms ease;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease;
 }
 .mc-provider.connected {
   border-color: color-mix(in srgb, #1a7f37 40%, var(--border));
@@ -7973,5 +7976,4 @@ h3.ambient-field-label {
 .mc-cta {
   margin-top: 16px;
   align-self: flex-start;
-
 }
