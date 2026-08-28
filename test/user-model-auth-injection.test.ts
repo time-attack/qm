@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { createUserModelCredentialStore } from "../src/model/user-model-credential-store.ts";
+import { readFileSync } from "node:fs";
 import { prepareCodexHome } from "../src/harness/codex-harness.ts";
-import { readCodexOAuthAuthFile } from "../src/harness/codex-auth.ts";
+import { codexOAuthAuthFromValue } from "../src/harness/codex-auth-store.ts";
 import { resolveIndividualAuthRouting } from "../src/core/individual-auth-routing.ts";
 import type { UserModelCredential } from "../src/model/user-model-credential-store.ts";
 
@@ -91,18 +92,25 @@ test("routing: no credentials -> null (falls through to gate, no deployment key)
   assert.equal(resolveIndividualAuthRouting(null, null, undefined), null);
 });
 
-test("prepareCodexHome writes a per-user auth.json the codex harness accepts", () => {
-  const jail = mkdtempSync(join(tmpdir(), "codex-inject-"));
-  prepareCodexHome({}, jail, {
-    accessToken: "acc-token",
-    refreshToken: "ref-token",
-    idToken: fakeIdToken("acct_9"),
-    accountId: "acct_9",
+test("per-user codex child auth is derived material: valid chatgpt auth without the refresh token", () => {
+  const userAuth = codexOAuthAuthFromValue({
+    auth_mode: "chatgpt",
+    tokens: {
+      access_token: "acc-token",
+      refresh_token: "ref-token",
+      id_token: fakeIdToken("acct_9"),
+      account_id: "acct_9",
+    },
   });
-  const auth = readCodexOAuthAuthFile(join(jail, "codex-home", "auth.json"));
-  assert.ok(auth, "written auth.json must satisfy isCodexOAuthAuth");
-  const tokens = auth!.tokens as Record<string, unknown>;
-  assert.equal(tokens.access_token, "acc-token");
-  assert.equal(tokens.refresh_token, "ref-token");
-  assert.equal(auth!.auth_mode, "chatgpt");
+  assert.ok(userAuth, "per-user tokens must satisfy the codex auth validator");
+  const jail = mkdtempSync(join(tmpdir(), "codex-inject-"));
+  prepareCodexHome({}, jail, userAuth);
+  const child = JSON.parse(readFileSync(join(jail, "codex-home", "auth.json"), "utf8")) as {
+    auth_mode?: string;
+    tokens?: Record<string, unknown>;
+  };
+  assert.equal(child.auth_mode, "chatgpt");
+  assert.equal(child.tokens?.access_token, "acc-token");
+  assert.equal(child.tokens?.refresh_token, undefined);
+  assert.ok(child.tokens?.id_token);
 });

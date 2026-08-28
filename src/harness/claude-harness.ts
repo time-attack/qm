@@ -59,6 +59,12 @@ export interface ClaudeHarnessOptions {
   execTimeoutCeilingMs?: number;
   backgroundJobTtlMs?: number;
   backgroundJobTtlMaxMs?: number;
+  /**
+   * Custodian of subscription auth (e.g. a keychain-held CLAUDE_CODE_OAUTH_TOKEN).
+   * Resolved fresh per session start; merged over static env so the secret
+   * never lives in process env or on the core host's disk.
+   */
+  authEnv?: () => Promise<NodeJS.ProcessEnv>;
   signals?: RunSignalStore;
   tasks?: TaskStore;
 }
@@ -442,12 +448,16 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
         swallow("claude: tape append", error);
       }
     };
+    const authEnv = opts.authEnv ? await opts.authEnv() : undefined;
     const sdkQuery = query({
       prompt: queue,
       options: {
         abortController: controller,
         cwd: jail,
-        env: perUserClaudeEnv(claudeChildEnv(opts.env ?? {}, jail), turn.claudeOauthToken),
+        env: perUserClaudeEnv(
+          claudeChildEnv(authEnv ? { ...(opts.env ?? {}), ...authEnv } : (opts.env ?? {}), jail),
+          turn.claudeOauthToken,
+        ),
         tools: allowSubagents ? ["Agent"] : [],
         skills: [],
         settingSources: [],

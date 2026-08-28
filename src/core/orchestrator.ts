@@ -2424,15 +2424,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ...(userProviderKeys ? { providerKeys: userProviderKeys } : {}),
             ...(claudeOauthToken ? { claudeOauthToken } : {}),
             ...(userHarnessOverride ? { runtimePinned: true } : {}),
-            ...(codexTurnAuth
-              ? {
-                  codexAuth: codexTurnAuth,
-                  onCodexAuthRefresh: async (t: CodexTurnAuth) => {
-                    const current = await userCredStore!.get(actor.id, "openai");
-                    if (current?.kind === "oauth") await userCredStore!.setOAuth(actor.id, "openai", t);
-                  },
-                }
-              : {}),
+            ...(codexTurnAuth ? { codexAuth: codexTurnAuth } : {}),
             ...(input.runId ? { runId: input.runId } : {}),
             ...(input.cancel ? { cancel: input.cancel } : {}),
             input: harnessInput,
