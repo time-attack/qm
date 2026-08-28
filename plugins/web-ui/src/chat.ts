@@ -50,13 +50,14 @@ import {
   makeCoreStreamFn,
   makeOpenerStreamFn,
   makeRunResumeStreamFn,
-  runApprovalTurn,
+  resolveApproval,
   TAIL_TURNS,
   type ApprovalDecision,
   type AssistantWork,
   type CoreSession,
   type DeliveredFile,
   type PendingApproval,
+  type RunPoll,
   type SessionBackgroundOutput,
   type SessionBackgroundView,
   type SessionEntry,
@@ -114,6 +115,7 @@ interface SettledRowKey {
   stopReason: unknown;
   errorMessage: unknown;
   approvalDecision: unknown;
+  sendFailure: unknown;
   forkable: boolean;
   tpl: TemplateResult | typeof nothing;
 }
@@ -519,15 +521,10 @@ export function createChatSurface(
     ctx.composer.state.error = "";
     drawActiveChat(agent);
     try {
-      await runApprovalTurn(
-        chatState.threadRef,
-        agent,
-        decision,
-        currentTurnOptions,
-        chatState.onWork ?? undefined,
-        undefined,
-        runSlot,
-      );
+      const threadRef = chatState.threadRef;
+      const runId = await resolveApproval(decision);
+      if (chatState.normalStreamFn && chatState.onWork)
+        await resumeRun(agent, threadRef, chatState.normalStreamFn, chatState.onWork, runId);
     } catch (err) {
       if (agent === chatState.agent) {
         ctx.composer.state.error = err instanceof Error ? err.message : "Could not send the approval.";
@@ -544,6 +541,12 @@ export function createChatSurface(
         }
         await refreshTranscriptFromEntries(agent);
       }
+      const active = chatState.agent;
+      if (active) {
+        await active.waitForIdle();
+        await syncPendingApprovals(active);
+        drawActiveChat(active);
+      }
     }
   }
 
@@ -559,7 +562,7 @@ export function createChatSurface(
     for (const m of agent.state.messages) {
       if ((m as { role?: string }).role !== "assistant") continue;
       for (const approval of (m as AssistantWork).work?.pendingApprovals ?? []) {
-        byId.set(approval.requestId, approval);
+        if (!chatState.resolvingApprovals.has(approval.requestId)) byId.set(approval.requestId, approval);
       }
     }
     return [...byId.values()];
@@ -567,6 +570,17 @@ export function createChatSurface(
 
   function hasUnresolvedApproval(): boolean {
     return activePendingApprovals().length > 0;
+  }
+
+  async function syncPendingApprovals(agent: Agent, messages = agent.state.messages): Promise<void> {
+    const id = chatState.sessionId;
+    if (!id || agent !== chatState.agent) return;
+    const r = await api<{ approvals: PendingApproval[] }>(`/api/sessions/${encodeURIComponent(id)}/approvals`).catch(
+      () => null,
+    );
+    if (!r || id !== chatState.sessionId || agent !== chatState.agent) return;
+    for (const message of messages) delete (message as AssistantWork).work?.pendingApprovals;
+    attachPendingApprovals(messages, r.approvals ?? [], transcriptModel());
   }
 
   async function refreshTranscriptFromEntries(agent: Agent): Promise<void> {
@@ -596,14 +610,7 @@ export function createChatSurface(
         generation,
         refreshedInherited ? entriesToMessages(refreshedInherited, transcriptModel()) : null,
       );
-      try {
-        const r = await api<{ approvals: PendingApproval[] }>(
-          `/api/sessions/${encodeURIComponent(sessionId)}/approvals`,
-        );
-        attachPendingApprovals(messages, r.approvals ?? [], transcriptModel());
-      } catch {
-        void 0;
-      }
+      await syncPendingApprovals(agent, messages);
       if (
         !forkOriginController.isCurrentRefresh(generation) ||
         sessionId !== chatState.sessionId ||
@@ -661,24 +668,16 @@ export function createChatSurface(
     }
   }
 
-  async function resumeTrackedRun(
+  async function resumeRun(
     agent: Agent,
     threadRef: string,
     normalStreamFn: Agent["streamFn"],
     onWork: (work: WorkBlock) => void,
+    runId: string,
+    initialRun?: RunPoll,
   ): Promise<boolean> {
-    if (!agent.state.messages.length) return false;
-    let activeRun: Awaited<ReturnType<typeof activeRunForThread>>;
-    try {
-      activeRun = await activeRunForThread(threadRef);
-    } catch {
-      return false;
-    }
-    if (agent === chatState.agent && threadRef === chatState.threadRef)
-      ctx.composer.setQueuedRuns(threadRef, activeRun.queued);
     if (
-      !activeRun.runId ||
-      !activeRun.run ||
+      !agent.state.messages.length ||
       agent !== chatState.agent ||
       appState.currentView !== "chats" ||
       agent.state.isStreaming
@@ -701,7 +700,7 @@ export function createChatSurface(
       .map((m) => messageText(m).trim())
       .filter(Boolean)
       .join("\n\n");
-    agent.streamFn = makeRunResumeStreamFn(activeRun.runId, activeRun.run, onWork, runSlot, seedText);
+    agent.streamFn = makeRunResumeStreamFn(runId, initialRun, onWork, runSlot, seedText);
     try {
       await agent.continue();
     } catch (err) {
@@ -714,6 +713,24 @@ export function createChatSurface(
       }
     }
     return true;
+  }
+
+  async function resumeTrackedRun(
+    agent: Agent,
+    threadRef: string,
+    normalStreamFn: Agent["streamFn"],
+    onWork: (work: WorkBlock) => void,
+  ): Promise<boolean> {
+    let activeRun: Awaited<ReturnType<typeof activeRunForThread>>;
+    try {
+      activeRun = await activeRunForThread(threadRef);
+    } catch {
+      return false;
+    }
+    if (agent === chatState.agent && threadRef === chatState.threadRef)
+      ctx.composer.setQueuedRuns(threadRef, activeRun.queued);
+    if (!activeRun.runId || !activeRun.run) return false;
+    return resumeRun(agent, threadRef, normalStreamFn, onWork, activeRun.runId, activeRun.run);
   }
 
   function adoptActiveSessionFromList(agent: Agent): void {
@@ -1065,17 +1082,13 @@ export function createChatSurface(
               : nothing
           }
           ${glanceTier || ctx.pane ? nothing : sessionTopbar()}
-          ${
-            glanceTier
-              ? paneGlance(agent, messages, glanceTier)
-              : html`<section class="chat-scroll" @scroll=${onTranscriptScroll}>
-                  <div class="message-stack ${messages.length || chatState.forkSession ? "" : "empty-stack"}">
-                    ${inheritedHeader()} ${chatState.earlierCount > 0 ? earlierNotice(agent) : nothing}
-                    ${messageContent}
-                    ${showStateError(messages, agent.state.errorMessage) ? html`<div class="composer-error inline">${agent.state.errorMessage}</div>` : nothing}
-                  </div>
-                </section>`
-          }
+          ${glanceTier ? paneGlance(agent, messages, glanceTier) : nothing}
+          <section class="chat-scroll" @scroll=${onTranscriptScroll}>
+            <div class="message-stack ${messages.length || chatState.forkSession ? "" : "empty-stack"}">
+              ${inheritedHeader()} ${chatState.earlierCount > 0 ? earlierNotice(agent) : nothing} ${messageContent}
+              ${showStateError(messages, agent.state.errorMessage) ? html`<div class="composer-error inline">${agent.state.errorMessage}</div>` : nothing}
+            </div>
+          </section>
           <div class="chat-bottom-dock">
             ${backgroundActivityStrip()} ${liveWorkDock(agent)} ${ctx.composer.composerForm(agent)}
           </div>
@@ -1184,6 +1197,23 @@ export function createChatSurface(
     `;
   }
 
+  async function retryFailedSend(message: AgentMessage, index: number): Promise<void> {
+    const agent = chatState.agent;
+    if (!agent || agent.state.isStreaming || agent.state.messages[index] !== message) return;
+    const failed = message as AgentMessage & { sendFailure?: string };
+    const error = agent.state.messages[index + 1] as AssistantWork | undefined;
+    if (!failed.sendFailure || !error?.retryableSend) return;
+    delete failed.sendFailure;
+    agent.state.messages = agent.state.messages.filter((_, current) => current !== index + 1);
+    ctx.composer.state.error = "";
+    drawActiveChat(agent);
+    try {
+      await agent.continue();
+    } catch (err) {
+      if (agent === chatState.agent) ctx.composer.state.error = errMessage(err, "Could not retry the message.");
+    }
+  }
+
   function visibleMessages(agent: Agent): AgentMessage[] {
     const out = [...agent.state.messages];
     if (agent.state.streamingMessage) out.push(agent.state.streamingMessage);
@@ -1195,7 +1225,12 @@ export function createChatSurface(
     index: number,
     isStreaming: boolean,
   ): TemplateResult | typeof nothing {
-    const msg = message as AssistantWork & { stopReason?: string; errorMessage?: string; approvalDecision?: string };
+    const msg = message as AssistantWork & {
+      stopReason?: string;
+      errorMessage?: string;
+      approvalDecision?: string;
+      sendFailure?: string;
+    };
     const work = msg.work;
     const cacheable =
       !isStreaming &&
@@ -1213,6 +1248,7 @@ export function createChatSurface(
       hit.stopReason === msg.stopReason &&
       hit.errorMessage === msg.errorMessage &&
       hit.approvalDecision === msg.approvalDecision &&
+      hit.sendFailure === msg.sendFailure &&
       hit.forkable === forkable
     ) {
       return hit.tpl;
@@ -1227,6 +1263,7 @@ export function createChatSurface(
       stopReason: msg.stopReason,
       errorMessage: msg.errorMessage,
       approvalDecision: msg.approvalDecision,
+      sendFailure: msg.sendFailure,
       forkable,
       tpl,
     });
@@ -1239,6 +1276,7 @@ export function createChatSurface(
     if (role === "user" || role === "user-with-attachments") {
       const attachments = ((message as UserMessageWithAttachments).attachments ?? []) as UserAttachmentView[];
       const steered = Boolean((message as { steered?: boolean }).steered);
+      const sendFailure = (message as { sendFailure?: string }).sendFailure;
       return html`
         <article class="message-row user-row ${steered ? "steered-row" : ""}" data-index=${index}>
           ${steered ? html`<div class="steer-label">↪ steered the running task</div>` : nothing}
@@ -1246,12 +1284,23 @@ export function createChatSurface(
             ${markdown(messageText(message))}
             ${attachments.length ? html`<div class="message-files">${attachments.map(userAttachmentBadge)}</div>` : nothing}
           </div>
+          ${
+            sendFailure
+              ? html`<div class="send-failure">
+                  <span>${sendFailure}</span>
+                  <button class="btn compact" type="button" @click=${() => void retryFailedSend(message, index)}>
+                    ${icon(RefreshCw, 12)} Retry
+                  </button>
+                </div>`
+              : nothing
+          }
           ${messageMeta(message, index)}
         </article>
       `;
     }
     if (role === "assistant") {
       const msg = message as AssistantMessage;
+      if ((msg as AssistantWork).retryableSend) return nothing;
       const work = isStreaming ? null : (msg as AssistantWork).work;
       const text = messageText(msg).trim();
       const hasText = Boolean(text);
@@ -1263,12 +1312,15 @@ export function createChatSurface(
         Boolean(deliveredFiles?.length) ||
         msg.content.some((chunk) => chunk.type === "thinking" && chunk.thinking.trim());
       if (!hasVisibleContent && msg.stopReason !== "error" && msg.stopReason !== "aborted") return nothing;
+      const errorTpl =
+        msg.stopReason === "error" && msg.errorMessage
+          ? html`<div class="composer-error inline">${msg.errorMessage}</div>`
+          : nothing;
       return html`
         <article class="message-row assistant-row ${isStreaming ? "streaming" : ""}" data-index=${index}>
           <div class="assistant-body">
             ${showWork ? workBlock(work, isStreaming) : nothing} ${assistantContent(msg, isStreaming, showWork)}
-            ${assistantFileList(deliveredFiles)}
-            ${msg.stopReason === "error" && msg.errorMessage ? html`<div class="composer-error inline">${msg.errorMessage}</div>` : nothing}
+            ${assistantFileList(deliveredFiles)} ${errorTpl}
             ${msg.stopReason === "aborted" ? html`<div class="stopped-note">${icon(Ban, 13)}<span>Stopped</span></div>` : nothing}
             ${isStreaming ? nothing : messageMeta(msg, index)}
           </div>
@@ -1948,6 +2000,17 @@ export function createChatSurface(
     return workedLabel("Worked", secs);
   }
 
+  function approvalSummaryLine(a: PendingApproval): TemplateResult | typeof nothing {
+    if (!a.summary) return nothing;
+    if (!a.summaryDetail || a.summaryDetail === a.summary) {
+      return html`<div class="approval-summary-line">${a.summary}</div>`;
+    }
+    return html`<details class="approval-summary-detail">
+      <summary class="approval-summary-line">${a.summary}</summary>
+      <div class="approval-detail-text">${a.summaryDetail}</div>
+    </details>`;
+  }
+
   function approvalSummaryView(a: PendingApproval, expanded = false): TemplateResult {
     const summary = firstLine(a.command, 80);
     const truncated = a.command.includes("\n") || a.command.length > 80;
@@ -1956,7 +2019,7 @@ export function createChatSurface(
         <span class="approval-title">Approval needed</span>
         ${a.reason ? html`<span class="approval-reason-badge">${a.reason}</span>` : nothing}
       </div>
-      ${a.summary ? html`<div class="approval-summary-line">${a.summary}</div>` : nothing}
+      ${approvalSummaryLine(a)}
       ${a.purpose ? html`<div class="approval-why"><span class="approval-why-label">Why</span>${a.purpose}</div>` : nothing}
       ${
         expanded

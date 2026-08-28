@@ -1904,6 +1904,37 @@ a.chat-row-open {
   color: var(--foreground);
   line-height: 1.4;
 }
+.approval-summary-detail > summary.approval-summary-line {
+  cursor: pointer;
+  list-style: none;
+}
+.approval-summary-detail > summary.approval-summary-line::-webkit-details-marker {
+  display: none;
+}
+.approval-summary-detail > summary.approval-summary-line::after {
+  content: " \25be Show full text";
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.approval-summary-detail[open] > summary.approval-summary-line::after {
+  content: " \25b4 Hide full text";
+}
+.approval-detail-text {
+  font-size: 13px;
+  color: var(--foreground);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--foreground) 5%, var(--background));
+}
 .approval-summary {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 13px;
@@ -2574,7 +2605,7 @@ a.chat-row-open {
   z-index: 30;
   width: 230px;
   max-width: calc(100vw - 36px);
-  max-height: min(320px, 52vh);
+  max-height: min(320px, var(--menu-available-height, 52vh));
   overflow-y: auto;
   padding: 6px;
   border: 1px solid var(--border);
@@ -2588,6 +2619,10 @@ a.chat-row-open {
   right: 0;
   left: auto;
   width: 230px;
+}
+.menu-popover.drop-down {
+  top: calc(100% + 8px);
+  bottom: auto;
 }
 .menu-title {
   padding: 6px 8px 5px;
@@ -2799,6 +2834,21 @@ a.chat-row-open {
 }
 .composer-error.inline {
   margin: 4px 0 0;
+}
+.send-failure {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--destructive, #b42318);
+  font-size: 12px;
+}
+.send-failure .btn {
+  color: var(--foreground);
+}
+.user-row .send-failure {
+  justify-content: flex-end;
 }
 .stopped-note {
   display: inline-flex;
@@ -4565,7 +4615,7 @@ a.chat-row-open {
     width: min(286px, calc(100vw - 30px));
   }
   .menu-popover {
-    max-height: 42vh;
+    max-height: min(320px, var(--menu-available-height, 42vh));
   }
   .message-bubble {
     max-width: 94%;
@@ -6656,6 +6706,7 @@ h3.ambient-field-label {
 }
 
 .dockview-theme-qm .dv-tabs-and-actions-container {
+  position: relative;
   box-sizing: border-box;
   padding: 4px 6px 4px 10px;
   gap: 8px;
@@ -6716,6 +6767,12 @@ h3.ambient-field-label {
 
 .dockview-theme-qm .dv-single-tab .split-tab-close {
   display: none;
+}
+
+/* …but archive has no group-level counterpart (the header's X closes the pane, it doesn't
+   archive), so a lone tab keeps its archive button. */
+.dockview-theme-qm .dv-single-tab .split-tab-archive {
+  display: inline-flex;
 }
 
 /* Multi-tab groups (tabbing is new capability the old canvas lacked): segmented chips in
@@ -6813,13 +6870,11 @@ h3.ambient-field-label {
   background: var(--secondary);
 }
 
-/* Per-tab close: an 18px slot, revealed on hover — the cron-row actions pattern. The tab
-   the user is in always reserves it; the rest hand those pixels to their label until
-   hovered, which in a narrow strip is the difference between a title and a syllable. Tab
-   widths come off a fixed basis, so the slot opening resizes nothing but its own label.
-   `margin-left: auto` parks the slot against the chip's trailing edge: a tab is sized by
-   that basis, not by its title, so anchoring the close to the end of the text strands it
-   mid-chip on every title shorter than the tab. */
+/* Per-tab close: an 18px slot, revealed on hover — the cron-row actions pattern. Every
+   tab reserves the slot even while it is transparent, so hovering never changes intrinsic
+   tab width or makes dockview reflow the strip. `margin-left: auto` parks the slot against
+   the chip's trailing edge: a tab is sized by its basis, not by its title, so anchoring the
+   close to the end of the text strands it mid-chip on every short title. */
 .split-tab-close {
   width: 18px;
   height: 18px;
@@ -6827,15 +6882,13 @@ h3.ambient-field-label {
   margin-left: auto;
   border-radius: 5px;
   opacity: 0;
-  transition:
-    opacity 0.12s ease,
-    width 0.12s ease,
-    min-width 0.12s ease;
+  transition: opacity 0.12s ease;
 }
 
-.dv-tab:not(.dv-active-tab):not(:hover):not(:focus-within) .split-tab-close {
-  width: 0;
-  min-width: 0;
+/* When the archive button is present it takes the auto margin; the close button that
+   follows sits snug beside it instead of splitting the leftover space. */
+.split-tab-archive + .split-tab-close {
+  margin-left: 2px;
 }
 
 .dv-tab.dv-active-tab .split-tab-close {
@@ -7043,9 +7096,36 @@ h3.ambient-field-label {
   color: var(--foreground);
 }
 
+/* A native tab drag lights every pane up as a valid target from drag start;
+   dockview's own dropzone still handles the precise edge choice on hover. */
+.split-canvas.tab-dragging .dv-groupview {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--primary) 55%, var(--border));
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+}
+
 .split-canvas.session-dragging .dv-tabs-and-actions-container {
   box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--primary) 55%, var(--border));
   background: color-mix(in srgb, var(--primary) 6%, transparent);
+}
+
+/* The strip's own drop target: the highlight above is only paint. */
+.strip-zones {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+}
+
+.strip-zones .split-zone {
+  inset: 0;
+  margin: 2px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 11.5px;
+}
+
+.strip-zones .split-zone.over {
+  border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
 }
 
 .zone-top {
@@ -7194,6 +7274,11 @@ h3.ambient-field-label {
 [data-density] .composer-error {
   flex-basis: 100%;
 }
+[data-density="card"] .chat-scroll,
+[data-density="strip"] .chat-scroll {
+  display: none;
+}
+
 .pane-card {
   min-height: 0;
   overflow: hidden;
@@ -7509,6 +7594,71 @@ h3.ambient-field-label {
   color: var(--destructive, #b42318);
 }
 
+.session-row.selected .session {
+  background: color-mix(in srgb, var(--primary, #d99a21) 16%, transparent);
+}
+.session-row.selected .session:hover,
+.session-row.selected.active .session {
+  background: color-mix(in srgb, var(--primary, #d99a21) 24%, transparent);
+}
+.session-row .session {
+  user-select: none;
+}
+.section-label.multi-select-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  text-transform: none;
+  letter-spacing: normal;
+  overflow: visible;
+}
+.multi-select-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.multi-select-summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.multi-select-color {
+  position: relative;
+  display: inline-flex;
+}
+.multi-select-color-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 0;
+  padding: 6px;
+  border-radius: 10px;
+}
+.multi-select-color-popover .session-menu-colors {
+  gap: 6px;
+  margin: 0;
+  padding: 2px;
+  border: 0;
+}
+.multi-select-color-popover .color-swatch {
+  width: 16px;
+  height: 16px;
+}
+.multi-select-actions {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+.multi-select-bar .icon-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+
 .mc-panel {
   width: 520px;
   gap: 6px;
@@ -7823,4 +7973,5 @@ h3.ambient-field-label {
 .mc-cta {
   margin-top: 16px;
   align-self: flex-start;
+
 }
