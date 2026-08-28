@@ -240,6 +240,13 @@ async function finishClaude(): Promise<void> {
 async function pollChatGPT(): Promise<void> {
   if (s.flow.kind !== "chatgpt") return;
   const device = s.flow.device;
+  if (Date.now() > device.expiresAt) {
+    deviceCache = null;
+    resetFlow();
+    s.error = "That code expired — start the sign-in again.";
+    paint();
+    return;
+  }
   try {
     const r = await api<{ status: string }>("/api/user-model-auth/chatgpt/poll", {
       method: "POST",

@@ -95,6 +95,7 @@ export interface HarnessTurnInput {
   scopeLabel: ScopeId;
   orgScopeId: ScopeId;
   providerKeys?: ProviderKeys;
+  runtimePinned?: boolean;
   claudeOauthToken?: string;
   codexAuth?: CodexTurnAuth;
   onCodexAuthRefresh?: (tokens: CodexTurnAuth) => void | Promise<void>;

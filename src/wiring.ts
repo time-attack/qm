@@ -261,6 +261,7 @@ import {
   auxiliaryModelFor,
   auxiliaryModelForProvider,
   defaultModelForHarness,
+  isHarnessId,
   modelProviderAvailabilityFor,
   type HarnessId,
 } from "./model/pi-models.ts";
@@ -836,12 +837,15 @@ export function buildApp(
     },
   };
   const judgeModelId = (): string => config.judgeModelId ?? auxiliaryModelFor(orgBaseModelId() ?? fallback.modelId);
-  const harness = createHarnessRouter(adapters, adapters.get(fallbackHarness)!, (input) =>
-    resolveRuntimeChoiceDurable(configStore, runtimeOrgScope, input.scopeLabel, fallback, {
+  const harness = createHarnessRouter(adapters, adapters.get(fallbackHarness)!, (input) => {
+    if (input.runtimePinned && input.harness && isHarnessId(input.harness) && input.model) {
+      return { harnessId: input.harness, modelId: input.model };
+    }
+    return resolveRuntimeChoiceDurable(configStore, runtimeOrgScope, input.scopeLabel, fallback, {
       ...(input.harness ? { harnessId: input.harness as HarnessId } : {}),
       ...(input.model ? { modelId: input.model } : {}),
-    }),
-  );
+    });
+  });
 
   const leaseTtlMs = config.leaseTtlMs;
   const maxAttempts = config.maxAttempts;

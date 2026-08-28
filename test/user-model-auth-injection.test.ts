@@ -49,8 +49,15 @@ test("user model credential store round-trips api key and oauth per user+provide
   assert.equal(oai?.oauth?.accessToken, "acc");
   assert.equal(oai?.oauth?.refreshToken, "ref");
 
-  assert.deepEqual(await store.connected("u1"), ["anthropic", "openai"]);
-  assert.deepEqual(await store.connected("stranger"), []);
+  assert.deepEqual(await store.connections("u1"), [
+    { provider: "anthropic", kind: "apikey" },
+    { provider: "openai", kind: "oauth" },
+  ]);
+  assert.deepEqual(await store.connections("stranger"), []);
+
+  await store.delete("u1", "anthropic");
+  assert.equal(await store.get("u1", "anthropic"), null);
+  assert.deepEqual(await store.connections("u1"), [{ provider: "openai", kind: "oauth" }]);
 });
 
 test("routing: anthropic api key -> pi harness with a claude model", () => {

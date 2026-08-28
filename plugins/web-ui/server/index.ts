@@ -805,33 +805,29 @@ const apiRoutes: readonly WebRoute[] = [
     handle: async (c) => {
       const { req, res, user } = c;
       res.setHeader("set-cookie", sessionCookie(user));
-      const permissions = await userPermissions();
-      let individualModelAuth = false;
-      let modelAuthConnected = false;
-      try {
-        const s = await coreFetch(
-          "GET",
-          `/v1/user-model-auth/status?principalId=${encodeURIComponent(user)}`,
-          "",
-          2_000,
-        );
-        if (s.status === 200) {
-          const parsed = JSON.parse(s.text) as { individualModelAuth?: boolean; connected?: string[] };
-          individualModelAuth = parsed.individualModelAuth === true;
-          modelAuthConnected = (parsed.connected?.length ?? 0) > 0;
-        }
-      } catch {
-        individualModelAuth = false;
+      const [permissions, workspaceUrl, authStatus] = await Promise.all([
+        userPermissions(),
+        slackWorkspaceUrl(),
+        coreFetch("GET", `/v1/user-model-auth/status?principalId=${encodeURIComponent(user)}`, "", 5_000).catch(
+          () => null,
+        ),
+      ]);
+      if (authStatus === null || authStatus.status !== 200) {
+        return json(res, 503, { error: "unavailable", message: "the assistant is briefly unavailable — retry shortly" });
       }
+      const parsed = JSON.parse(authStatus.text) as {
+        individualModelAuth?: boolean;
+        connections?: { provider: string }[];
+      };
       return json(res, 200, {
         user,
         org: ORG,
         mode: AUTH_MODE,
-        slackWorkspaceUrl: await slackWorkspaceUrl(),
+        slackWorkspaceUrl: workspaceUrl,
         impersonatedBy: resolveIdentity(req)?.impersonator ?? null,
         permissions,
-        individualModelAuth,
-        modelAuthConnected,
+        individualModelAuth: parsed.individualModelAuth === true,
+        modelAuthConnected: (parsed.connections?.length ?? 0) > 0,
       });
     },
   },

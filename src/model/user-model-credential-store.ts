@@ -34,10 +34,14 @@ interface SecretPayload {
   oauth?: UserOAuthTokens;
 }
 
+export interface UserCredentialConnection {
+  provider: ModelProvider;
+  kind: UserCredentialKind;
+}
+
 export interface UserModelCredentialStore {
   get(userId: string, provider: ModelProvider): Promise<UserModelCredential | null>;
-  connected(userId: string): Promise<ModelProvider[]>;
-  hasAny(userId: string): Promise<boolean>;
+  connections(userId: string): Promise<UserCredentialConnection[]>;
   setApiKey(userId: string, provider: ModelProvider, apiKey: string): Promise<void>;
   setOAuth(userId: string, provider: ModelProvider, tokens: UserOAuthTokens): Promise<void>;
   delete(userId: string, provider: ModelProvider): Promise<void>;
@@ -87,15 +91,14 @@ export function createUserModelCredentialStore(input: {
   return {
     get: read,
 
-    async connected(userId) {
+    async connections(userId) {
       const found = await Promise.all(
-        PROVIDERS.map(async (provider) => ((await read(userId, provider)) ? provider : null)),
+        PROVIDERS.map(async (provider) => {
+          const saved = await input.backing.get(keyFor(userId, provider));
+          return saved && !saved.disabled && saved.secretEnc ? { provider, kind: saved.kind } : null;
+        }),
       );
-      return found.filter((p): p is ModelProvider => p !== null);
-    },
-
-    async hasAny(userId) {
-      return (await this.connected(userId)).length > 0;
+      return found.filter((c): c is UserCredentialConnection => c !== null);
     },
 
     async setApiKey(userId, provider, apiKey) {
@@ -110,9 +113,7 @@ export function createUserModelCredentialStore(input: {
     },
 
     async delete(userId, provider) {
-      const saved = await input.backing.get(keyFor(userId, provider));
-      if (!saved) return;
-      await input.backing.put(keyFor(userId, provider), { ...saved, disabled: true, updatedAt: Date.now() });
+      await input.backing.delete(keyFor(userId, provider));
     },
   };
 }

@@ -129,6 +129,15 @@ export function claudeChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.
   return env;
 }
 
+export function perUserClaudeEnv(env: NodeJS.ProcessEnv, oauthToken: string | undefined): NodeJS.ProcessEnv {
+  if (!oauthToken) return env;
+  const scoped = { ...env };
+  delete scoped.ANTHROPIC_API_KEY;
+  delete scoped.ANTHROPIC_AUTH_TOKEN;
+  scoped.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
+  return scoped;
+}
+
 export function claudeProcessIdentity(uid = process.getuid?.()): { uid: number; gid: number } | undefined {
   return uid === 0 ? { uid: 65534, gid: 65534 } : undefined;
 }
@@ -438,9 +447,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
       options: {
         abortController: controller,
         cwd: jail,
-        env: turn.claudeOauthToken
-          ? { ...claudeChildEnv(opts.env ?? {}, jail), CLAUDE_CODE_OAUTH_TOKEN: turn.claudeOauthToken }
-          : claudeChildEnv(opts.env ?? {}, jail),
+        env: perUserClaudeEnv(claudeChildEnv(opts.env ?? {}, jail), turn.claudeOauthToken),
         tools: allowSubagents ? ["Agent"] : [],
         skills: [],
         settingSources: [],

@@ -1061,7 +1061,6 @@ export function createMemoryConfigStore(
           : []),
         `channelHeaderPin:${id}`,
         `ackEmoji:${id}`,
-        ...(id === org ? [`approvedHarnesses:${org}`, `orgAmbient:${org}`] : []),
       ];
       await Promise.all(
         keys.map(async (key) => {

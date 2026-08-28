@@ -117,3 +117,9 @@ export function codexOAuthAccessToken(value: unknown): string | undefined {
   const tokens = auth ? asObject(auth.tokens) : null;
   return typeof tokens?.access_token === "string" && tokens.access_token ? tokens.access_token : undefined;
 }
+
+export function codexOAuthIdToken(value: unknown): string | undefined {
+  const auth = asObject(value);
+  const tokens = auth ? asObject(auth.tokens) : null;
+  return typeof tokens?.id_token === "string" && tokens.id_token ? tokens.id_token : undefined;
+}

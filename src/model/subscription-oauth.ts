@@ -1,12 +1,12 @@
-import { createHash, randomBytes } from "node:crypto";
+import { codeChallengeS256, generateCodeVerifier } from "../connectors/oauth.ts";
+import { CODEX_OAUTH_ISSUER, codexOAuthJwtAccountIdFromToken } from "../harness/codex-auth-file.ts";
 import type { UserOAuthTokens } from "./user-model-credential-store.ts";
 
 const CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const CHATGPT_ISSUER = "https://auth.openai.com";
 const CHATGPT_SCOPE = "openid profile email offline_access";
-const CHATGPT_DEVICE_API = `${CHATGPT_ISSUER}/api/accounts`;
-const CHATGPT_DEVICE_REDIRECT = `${CHATGPT_ISSUER}/deviceauth/callback`;
-const CHATGPT_DEVICE_VERIFICATION = `${CHATGPT_ISSUER}/codex/device`;
+const CHATGPT_DEVICE_API = `${CODEX_OAUTH_ISSUER}/api/accounts`;
+const CHATGPT_DEVICE_REDIRECT = `${CODEX_OAUTH_ISSUER}/deviceauth/callback`;
+const CHATGPT_DEVICE_VERIFICATION = `${CODEX_OAUTH_ISSUER}/codex/device`;
 
 const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const CLAUDE_AUTHORIZE = "https://claude.ai/oauth/authorize";
@@ -14,32 +14,19 @@ const CLAUDE_TOKEN = "https://console.anthropic.com/v1/oauth/token";
 const CLAUDE_REDIRECT = "https://platform.claude.com/oauth/code/callback";
 const CLAUDE_SCOPE = "org:create_api_key user:profile user:inference";
 
-function base64url(buf: Buffer): string {
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function pkcePair(): { verifier: string; challenge: string } {
-  const verifier = base64url(randomBytes(48));
-  const challenge = base64url(createHash("sha256").update(verifier).digest());
-  return { verifier, challenge };
-}
-
 function decodeJwtClaims(jwt: string | undefined): Record<string, unknown> | undefined {
   if (!jwt) return undefined;
   const part = jwt.split(".")[1];
   if (!part) return undefined;
   try {
-    return JSON.parse(Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+    return JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
   } catch {
     return undefined;
   }
 }
 
 function chatgptAccountId(tokens: { idToken?: string; accessToken: string }): string | undefined {
-  const claims = decodeJwtClaims(tokens.idToken) ?? decodeJwtClaims(tokens.accessToken);
-  const auth = claims?.["https://api.openai.com/auth"] as Record<string, unknown> | undefined;
-  const id = auth?.chatgpt_account_id;
-  return typeof id === "string" ? id : undefined;
+  return codexOAuthJwtAccountIdFromToken(tokens.idToken) ?? codexOAuthJwtAccountIdFromToken(tokens.accessToken);
 }
 
 function tokenExpiry(raw: { expires_in?: number; access_token?: string }): number | undefined {
@@ -95,7 +82,7 @@ export async function pollChatGPTDeviceLogin(
 }
 
 async function exchangeChatGPTCode(code: string, codeVerifier: string): Promise<UserOAuthTokens> {
-  const res = await fetch(`${CHATGPT_ISSUER}/oauth/token`, {
+  const res = await fetch(`${CODEX_OAUTH_ISSUER}/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
     body: new URLSearchParams({
@@ -125,7 +112,7 @@ async function exchangeChatGPTCode(code: string, codeVerifier: string): Promise<
 }
 
 export async function refreshChatGPTTokens(refreshToken: string): Promise<UserOAuthTokens> {
-  const res = await fetch(`${CHATGPT_ISSUER}/oauth/token`, {
+  const res = await fetch(`${CODEX_OAUTH_ISSUER}/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
@@ -159,7 +146,8 @@ export interface ClaudeAuthStart {
 }
 
 export function startClaudeLogin(): ClaudeAuthStart {
-  const { verifier, challenge } = pkcePair();
+  const verifier = generateCodeVerifier();
+  const challenge = codeChallengeS256(verifier);
   const url = new URL(CLAUDE_AUTHORIZE);
   url.searchParams.set("code", "true");
   url.searchParams.set("client_id", CLAUDE_CLIENT_ID);

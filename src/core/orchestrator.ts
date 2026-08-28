@@ -2360,13 +2360,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         let claudeOauthToken: string | undefined;
         let codexTurnAuth: CodexTurnAuth | undefined;
         const userCredStore = deps.userModelCredentials;
-        if (userCredStore && (await deps.config?.getIndividualModelAuthDurable())) {
+        if (userCredStore && humanTurn && (await deps.config?.getIndividualModelAuthDurable())) {
           const [anthCred, oaiCred] = await Promise.all([
             userCredStore.get(actor.id, "anthropic"),
             userCredStore.get(actor.id, "openai"),
           ]);
           const routing = resolveIndividualAuthRouting(anthCred ?? null, oaiCred ?? null, input.model);
-          userProviderKeys = {};
           if (routing?.kind === "apikey") {
             userHarnessOverride = "pi";
             userProviderKeys = { [routing.provider]: routing.apiKey };
@@ -2375,14 +2374,17 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             claudeOauthToken = await freshClaudeAccessToken(userCredStore, actor.id, anthCred.oauth);
             userHarnessOverride = routing.harness;
             userModelOverride = routing.model;
-            userProviderKeys = undefined;
           } else if (routing?.kind === "oauth" && routing.provider === "openai" && oaiCred?.oauth) {
             codexTurnAuth = await freshCodexTurnAuth(userCredStore, actor.id, oaiCred.oauth);
             if (codexTurnAuth) {
               userHarnessOverride = routing.harness;
               userModelOverride = routing.model;
-              userProviderKeys = undefined;
             }
+          }
+          if (!userHarnessOverride) {
+            throw new NonRetryableTurnError(
+              "This organization has each person chat on their own AI account, and yours isn't connected yet. Open the web app and connect Claude or ChatGPT from the AI account panel, then try again.",
+            );
           }
         }
         const effectiveModel = userModelOverride ?? input.model;
@@ -2421,10 +2423,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             session,
             ...(userProviderKeys ? { providerKeys: userProviderKeys } : {}),
             ...(claudeOauthToken ? { claudeOauthToken } : {}),
+            ...(userHarnessOverride ? { runtimePinned: true } : {}),
             ...(codexTurnAuth
               ? {
                   codexAuth: codexTurnAuth,
-                  onCodexAuthRefresh: (t: CodexTurnAuth) => userCredStore!.setOAuth(actor.id, "openai", t),
+                  onCodexAuthRefresh: async (t: CodexTurnAuth) => {
+                    const current = await userCredStore!.get(actor.id, "openai");
+                    if (current?.kind === "oauth") await userCredStore!.setOAuth(actor.id, "openai", t);
+                  },
                 }
               : {}),
             ...(input.runId ? { runId: input.runId } : {}),

@@ -5,24 +5,11 @@ import {
   startChatGPTDeviceLogin,
   startClaudeLogin,
 } from "../../model/subscription-oauth.ts";
+import { errMessage } from "../../util/errors.ts";
 import { sendJson } from "../http.ts";
+import { validateProviderApiKey } from "./admin/model-providers.ts";
 import type { ApiCtx, Route } from "./route.ts";
 import { audit } from "./shared.ts";
-
-const API_KEY_CHECK: Record<ModelProvider, { url: string; headers: (key: string) => Record<string, string> }> = {
-  anthropic: {
-    url: "https://api.anthropic.com/v1/models",
-    headers: (key) => ({ "x-api-key": key, "anthropic-version": "2023-06-01" }),
-  },
-  openai: {
-    url: "https://api.openai.com/v1/models",
-    headers: (key) => ({ authorization: `Bearer ${key}` }),
-  },
-  openrouter: {
-    url: "https://openrouter.ai/api/v1/key",
-    headers: (key) => ({ authorization: `Bearer ${key}` }),
-  },
-};
 
 function caller(ctx: ApiCtx): string | null {
   return ctx.actor?.p ?? null;
@@ -38,39 +25,12 @@ function connectProvider(raw: unknown): ModelProvider | null {
   return null;
 }
 
-async function validateApiKey(ctx: ApiCtx, provider: ModelProvider, apiKey: string): Promise<boolean> {
-  try {
-    const res = await (ctx.deps.modelCredentialFetch ?? fetch)(API_KEY_CHECK[provider].url, {
-      headers: API_KEY_CHECK[provider].headers(apiKey),
-      signal: AbortSignal.timeout(5_000),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 async function getStatus(ctx: ApiCtx): Promise<void> {
   const principal = caller(ctx);
   if (!principal) return sendJson(ctx.res, 401, { error: "unauthorized" });
   const required = (await ctx.deps.config?.getIndividualModelAuthDurable()) ?? false;
-  const store = ctx.deps.userModelCredentials;
-  const providers: ModelProvider[] = ["anthropic", "openai"];
-  const connections = store
-    ? (
-        await Promise.all(
-          providers.map(async (provider) => {
-            const cred = await store.get(principal, provider);
-            return cred ? { provider, kind: cred.kind } : null;
-          }),
-        )
-      ).filter((c): c is { provider: ModelProvider; kind: "apikey" | "oauth" } => c !== null)
-    : [];
-  return sendJson(ctx.res, 200, {
-    individualModelAuth: required,
-    connected: connections.map((c) => c.provider),
-    connections,
-  });
+  const connections = (await ctx.deps.userModelCredentials?.connections(principal)) ?? [];
+  return sendJson(ctx.res, 200, { individualModelAuth: required, connections });
 }
 
 async function disconnect(ctx: ApiCtx): Promise<void> {
@@ -93,7 +53,7 @@ async function putApiKey(ctx: ApiCtx): Promise<void> {
   const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
   if (!provider) return sendJson(ctx.res, 400, { error: "bad_request", message: "provider must be claude or chatgpt" });
   if (!apiKey) return sendJson(ctx.res, 400, { error: "bad_request", message: "API key is required" });
-  if (!(await validateApiKey(ctx, provider, apiKey))) {
+  if (!(await validateProviderApiKey(ctx, provider, apiKey))) {
     return sendJson(ctx.res, 400, { error: "invalid_api_key", message: `${provider} rejected this API key` });
   }
   await ctx.deps.userModelCredentials.setApiKey(principal, provider, apiKey);
@@ -107,7 +67,7 @@ async function chatgptStart(ctx: ApiCtx): Promise<void> {
     const prompt = await startChatGPTDeviceLogin();
     return sendJson(ctx.res, 200, prompt);
   } catch (e) {
-    return sendJson(ctx.res, 502, { error: "oauth_start_failed", message: String((e as Error).message) });
+    return sendJson(ctx.res, 502, { error: "oauth_start_failed", message: errMessage(e) });
   }
 }
 
@@ -126,7 +86,7 @@ async function chatgptPoll(ctx: ApiCtx): Promise<void> {
     audit(ctx.deps, { principalId: principal, action: "user-model-auth.oauth", resource: "openai", scopeLabel: principal });
     return sendJson(ctx.res, 200, { status: "connected" });
   } catch (e) {
-    return sendJson(ctx.res, 502, { error: "oauth_poll_failed", message: String((e as Error).message) });
+    return sendJson(ctx.res, 502, { error: "oauth_poll_failed", message: errMessage(e) });
   }
 }
 
@@ -154,7 +114,7 @@ async function claudeComplete(ctx: ApiCtx): Promise<void> {
     });
     return sendJson(ctx.res, 200, { ok: true });
   } catch (e) {
-    return sendJson(ctx.res, 502, { error: "oauth_complete_failed", message: String((e as Error).message) });
+    return sendJson(ctx.res, 502, { error: "oauth_complete_failed", message: errMessage(e) });
   }
 }
 

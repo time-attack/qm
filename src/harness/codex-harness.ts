@@ -24,6 +24,7 @@ import {
   syncCodexOAuthAuthFile,
   type CodexOAuthAuthLock,
 } from "./codex-auth.ts";
+import { codexOAuthIdToken, codexOAuthJwtAccountId, codexOAuthJwtAccountIdFromToken } from "./codex-auth-file.ts";
 import {
   defineHarness,
   type CodexTurnAuth,
@@ -315,12 +316,6 @@ export function prepareCodexHome(source: NodeJS.ProcessEnv, jail: string, userAu
     );
   }
   return target;
-}
-
-function codexTokenField(auth: unknown, field: string): string | undefined {
-  const tokens = (auth as { tokens?: Record<string, unknown> })?.tokens;
-  const value = tokens?.[field];
-  return typeof value === "string" && value ? value : undefined;
 }
 
 async function transitionTask(
@@ -963,18 +958,31 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
       const lock = turnAuthLock;
       if (!lock) return;
       try {
-        if (perUserCodexActive && turn.onCodexAuthRefresh) {
-          const refreshed = readCodexOAuthAuthFile(join(rt.jail, "codex-home", "auth.json"));
+        if (perUserCodexActive) {
+          const childAuthPath = join(rt.jail, "codex-home", "auth.json");
+          const refreshed = lock.isHeld() ? readCodexOAuthAuthFile(childAuthPath) : null;
+          rmSync(childAuthPath, { force: true });
+          prepareCodexHome(sourceEnv, rt.jail);
           const access = refreshed ? codexOAuthAccessToken(refreshed) : undefined;
           const refresh = refreshed ? codexOAuthRefreshToken(refreshed) : undefined;
-          if (refreshed && access && refresh) {
+          const expectedAccount = turn.codexAuth
+            ? (codexOAuthJwtAccountIdFromToken(turn.codexAuth.idToken) ?? turn.codexAuth.accountId)
+            : undefined;
+          const refreshedAccount = refreshed ? codexOAuthJwtAccountId(refreshed) : undefined;
+          if (
+            turn.onCodexAuthRefresh &&
+            refreshed &&
+            access &&
+            refresh &&
+            expectedAccount &&
+            refreshedAccount === expectedAccount
+          ) {
+            const idToken = codexOAuthIdToken(refreshed);
             await turn.onCodexAuthRefresh({
               accessToken: access,
               refreshToken: refresh,
-              ...(codexTokenField(refreshed, "id_token") ? { idToken: codexTokenField(refreshed, "id_token")! } : {}),
-              ...(codexTokenField(refreshed, "account_id")
-                ? { accountId: codexTokenField(refreshed, "account_id")! }
-                : {}),
+              ...(idToken ? { idToken } : {}),
+              accountId: refreshedAccount,
             });
           }
         } else if (
@@ -1014,7 +1022,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
           if (Date.now() >= runtimeRecoveryDeadline)
             throw new NonRetryableTurnError("Codex OAuth runtime recovery timed out");
           const authLockPromise = acquireCodexOAuthAuthLock(
-            join(rt.jail, "codex-home", "auth.json"),
+            authPath ?? join(rt.jail, "codex-home", "auth.json"),
             AbortSignal.any([closeAbort.signal, authAcquireAbort.signal]),
             Math.min(120_000, Math.max(1, runtimeRecoveryDeadline - Date.now())),
           );

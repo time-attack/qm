@@ -36,7 +36,7 @@ async function actor(ctx: ApiCtx) {
   return authorizeAdmin(ctx, scope);
 }
 
-async function validate(ctx: ApiCtx, provider: ModelProvider, apiKey: string): Promise<boolean> {
+export async function validateProviderApiKey(ctx: ApiCtx, provider: ModelProvider, apiKey: string): Promise<boolean> {
   try {
     const response = await (ctx.deps.modelCredentialFetch ?? fetch)(validationUrl(provider), {
       headers: VALIDATION_REQUESTS[provider].headers(apiKey),
@@ -77,7 +77,7 @@ export async function putModelProvider(ctx: ApiCtx): Promise<void> {
   if (typeof apiKey !== "string" || !apiKey.trim()) {
     return sendJson(ctx.res, 400, { error: "bad_request", message: "API key is required" });
   }
-  if (!(await validate(ctx, provider, apiKey.trim()))) {
+  if (!(await validateProviderApiKey(ctx, provider, apiKey.trim()))) {
     return sendJson(ctx.res, 400, { error: "invalid_api_key", message: `${provider} rejected this API key` });
   }
   await ctx.deps.modelCredentials.set(provider, apiKey.trim(), authorized.id);
