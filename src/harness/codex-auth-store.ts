@@ -74,6 +74,28 @@ export function codexOAuthAuthFromValue(value: unknown): JsonObject | null {
  * refresh token. The child can use the access token until it expires; only the
  * store may refresh. The next turn's `load()` re-materializes fresh tokens.
  */
+/**
+ * Child auth.json built straight from derived per-turn material (no refresh
+ * token ever existed in this shape). Returns null unless the id/access token
+ * carries a trusted ChatGPT account claim.
+ */
+export function childCodexAuthFromDerived(derived: {
+  accessToken: string;
+  idToken: string;
+  accountId?: string;
+}): JsonObject | null {
+  const auth: JsonObject = {
+    auth_mode: "chatgpt",
+    tokens: {
+      access_token: derived.accessToken,
+      id_token: derived.idToken,
+      ...(derived.accountId ? { account_id: derived.accountId } : {}),
+    },
+  };
+  if (!derived.accessToken || !codexOAuthJwtAccountId(auth)) return null;
+  return auth;
+}
+
 export function childCodexOAuthAuth(auth: JsonObject): JsonObject {
   const sanitized = sanitizedCodexOAuthAuth(auth);
   const tokens = asObject(sanitized.tokens);

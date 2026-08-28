@@ -16,8 +16,8 @@ import { parseSecurityScreenVerdict, SECURITY_SCREEN_SYSTEM_PROMPT } from "../se
 import { CodexAppServer, CodexRpcError, redactCodexDiagnostics } from "./codex-app-server.ts";
 import { codexAuthFileForEnv, readCodexOAuthAuthFile } from "./codex-auth.ts";
 import {
+  childCodexAuthFromDerived,
   childCodexOAuthAuth,
-  codexOAuthAuthFromValue,
   fileCodexAuthStore,
   type CodexAuthStore,
 } from "./codex-auth-store.ts";
@@ -840,15 +840,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
       // Per-user turn: a dedicated short-lived app-server on this user's
       // account. No shared jail, no cross-account serialization — the org
       // runtime is never touched.
-      const userAuth = codexOAuthAuthFromValue({
-        auth_mode: "chatgpt",
-        tokens: {
-          access_token: turn.codexAuth.accessToken,
-          refresh_token: turn.codexAuth.refreshToken,
-          ...(turn.codexAuth.idToken ? { id_token: turn.codexAuth.idToken } : {}),
-          ...(turn.codexAuth.accountId ? { account_id: turn.codexAuth.accountId } : {}),
-        },
-      });
+      const userAuth = childCodexAuthFromDerived(turn.codexAuth);
       if (!userAuth) {
         finishSetup();
         throw new NonRetryableTurnError(

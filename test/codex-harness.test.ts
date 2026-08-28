@@ -1185,7 +1185,6 @@ test("per-user Codex turns run on their own app-server with derived auth, never 
         ? {
             codexAuth: {
               accessToken: `${accountId}-access`,
-              refreshToken: `${accountId}-refresh`,
               idToken: oauthIdToken(accountId),
               accountId,
             },

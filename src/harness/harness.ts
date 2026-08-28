@@ -47,10 +47,13 @@ interface HarnessSecurityScreenInput {
   recordLlmRequest?(rec: HarnessLlmRequestRecord, signal?: AbortSignal): void | Promise<void>;
 }
 
+/**
+ * Derived per-turn Codex auth: access + id token only. The refresh token
+ * stays in the keychain; the harness (and its jail) never see it.
+ */
 export interface CodexTurnAuth {
   accessToken: string;
-  refreshToken: string;
-  idToken?: string;
+  idToken: string;
   accountId?: string;
   expiresAt?: number;
 }

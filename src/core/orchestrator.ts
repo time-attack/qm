@@ -136,8 +136,6 @@ import type { Orchestrator, OrchestratorDeps, OrchestratorInput } from "./orches
 import { resolveModel } from "../model/pi-models.ts";
 import type { ProviderKeys } from "../harness/pi-harness.ts";
 import type { CodexTurnAuth } from "../harness/harness.ts";
-import type { UserModelCredentialStore, UserOAuthTokens } from "../model/user-model-credential-store.ts";
-import { refreshChatGPTTokens, refreshClaudeTokens } from "../model/subscription-oauth.ts";
 import { resolveIndividualAuthRouting } from "./individual-auth-routing.ts";
 import {
   MAX_AUTO_ATTACHMENT_SCREEN_BYTES,
@@ -183,41 +181,6 @@ const ACTIVITY_ENTRY_TYPES = new Set<EntryType>(["tool_call", "tool_result", "ap
 function knownBrowseModel(id: string | null | undefined): { id: string; provider: string } | undefined {
   const provider = id ? resolveModel(id)?.provider : undefined;
   return id && provider ? { id, provider } : undefined;
-}
-
-function oauthExpiringSoon(tokens: UserOAuthTokens): boolean {
-  return typeof tokens.expiresAt === "number" && tokens.expiresAt < Date.now() + 60_000 && !!tokens.refreshToken;
-}
-
-async function freshClaudeAccessToken(
-  store: UserModelCredentialStore,
-  userId: string,
-  tokens: UserOAuthTokens,
-): Promise<string> {
-  if (!oauthExpiringSoon(tokens)) return tokens.accessToken;
-  const refreshed = await refreshClaudeTokens(tokens.refreshToken!);
-  await store.setOAuth(userId, "anthropic", refreshed);
-  return refreshed.accessToken;
-}
-
-async function freshCodexTurnAuth(
-  store: UserModelCredentialStore,
-  userId: string,
-  tokens: UserOAuthTokens,
-): Promise<CodexTurnAuth | undefined> {
-  let current = tokens;
-  if (oauthExpiringSoon(tokens)) {
-    current = await refreshChatGPTTokens(tokens.refreshToken!);
-    await store.setOAuth(userId, "openai", current);
-  }
-  if (!current.idToken || !current.refreshToken) return undefined;
-  return {
-    accessToken: current.accessToken,
-    refreshToken: current.refreshToken,
-    idToken: current.idToken,
-    ...(current.accountId ? { accountId: current.accountId } : {}),
-    ...(current.expiresAt ? { expiresAt: current.expiresAt } : {}),
-  };
 }
 
 const SHARED_CORE_MD = loadProtocolFile("shared-core");
@@ -2371,12 +2334,23 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             userProviderKeys = { [routing.provider]: routing.apiKey };
             userModelOverride = routing.model;
           } else if (routing?.kind === "oauth" && routing.provider === "anthropic" && anthCred?.oauth) {
-            claudeOauthToken = await freshClaudeAccessToken(userCredStore, actor.id, anthCred.oauth);
-            userHarnessOverride = routing.harness;
-            userModelOverride = routing.model;
+            // Derived material only — the keychain refreshes centrally
+            // (single-flight, CAS) and the refresh token never leaves it.
+            const derived = await userCredStore.derivedOAuth(actor.id, "anthropic");
+            if (derived) {
+              claudeOauthToken = derived.accessToken;
+              userHarnessOverride = routing.harness;
+              userModelOverride = routing.model;
+            }
           } else if (routing?.kind === "oauth" && routing.provider === "openai" && oaiCred?.oauth) {
-            codexTurnAuth = await freshCodexTurnAuth(userCredStore, actor.id, oaiCred.oauth);
-            if (codexTurnAuth) {
+            const derived = await userCredStore.derivedOAuth(actor.id, "openai");
+            if (derived?.idToken) {
+              codexTurnAuth = {
+                accessToken: derived.accessToken,
+                idToken: derived.idToken,
+                ...(derived.accountId ? { accountId: derived.accountId } : {}),
+                ...(derived.expiresAt !== undefined ? { expiresAt: derived.expiresAt } : {}),
+              };
               userHarnessOverride = routing.harness;
               userModelOverride = routing.model;
             }

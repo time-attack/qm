@@ -22,7 +22,7 @@ const apikey = (provider: "anthropic" | "openai", apiKey: string): UserModelCred
 const oauth = (provider: "anthropic" | "openai"): UserModelCredential => ({
   provider,
   kind: "oauth",
-  oauth: { accessToken: "acc", refreshToken: "ref" },
+  oauth: {},
   updatedAt: 0,
 });
 
@@ -55,12 +55,20 @@ test("user model credential store round-trips api key and oauth per user+provide
     refreshToken: "ref",
     idToken: fakeIdToken("acct_1"),
     accountId: "acct_1",
-    expiresAt: 123,
+    expiresAt: Date.now() + 3_600_000,
   });
   const oai = await store.get("u1", "openai");
   assert.equal(oai?.kind, "oauth");
-  assert.equal(oai?.oauth?.accessToken, "acc");
-  assert.equal(oai?.oauth?.refreshToken, "ref");
+
+  // The subscription login is a keychain CONNECTOR token: the keychain owns
+  // encryption, expiry, and central refresh. Callers only ever get derived
+  // material — never the refresh token.
+  const derived = await store.derivedOAuth("u1", "openai");
+  assert.equal(derived?.accessToken, "acc");
+  assert.equal(derived?.idToken, fakeIdToken("acct_1"));
+  assert.equal(derived?.accountId, "acct_1");
+  assert.ok(!("refreshToken" in (derived ?? {})));
+  assert.equal(await store.derivedOAuth("stranger", "openai"), null);
 
   assert.deepEqual(await store.connections("u1"), [
     { provider: "anthropic", kind: "apikey" },
@@ -68,25 +76,72 @@ test("user model credential store round-trips api key and oauth per user+provide
   ]);
   assert.deepEqual(await store.connections("stranger"), []);
 
-  // Unified custody: the AI login is an ordinary keychain credential the
-  // owner (and keychain admin surfaces) can see, and keychain.remove works on.
+  // API keys are ordinary user-owned keychain credentials (admin-visible,
+  // covered by "remove my credentials").
   const owned = await keychain.listByOwner("u1");
-  assert.deepEqual(owned.map((c) => c.service).sort(), ["model-anthropic", "model-openai"]);
+  assert.deepEqual(
+    owned.map((c) => c.service),
+    ["model-anthropic"],
+  );
   assert.ok(owned.every((c) => c.origin === "individual-model-auth"));
   assert.ok(!("secretEnc" in owned[0]!));
-  const oaiCred = owned.find((c) => c.service === "model-openai")!;
-  assert.equal(oaiCred.accountLabel, "acct_1");
   // A stranger cannot read the owner's secret through the store's path.
-  assert.equal(await keychain.readOwnSecret("stranger", oaiCred.id), null);
+  assert.equal(await keychain.readOwnSecret("stranger", owned[0]!.id), null);
+
+  // One connection per provider: an API key replaces a subscription login.
+  await store.setApiKey("u1", "openai", "sk-oai-xyz");
+  assert.equal((await store.get("u1", "openai"))?.kind, "apikey");
+  assert.equal(await store.derivedOAuth("u1", "openai"), null);
+  // ...and a subscription login replaces an API key.
+  await store.setOAuth("u1", "openai", { accessToken: "acc2", idToken: fakeIdToken("acct_1") });
+  assert.equal((await store.get("u1", "openai"))?.kind, "oauth");
 
   await store.delete("u1", "anthropic");
   assert.equal(await store.get("u1", "anthropic"), null);
-  assert.deepEqual(await store.connections("u1"), [{ provider: "openai", kind: "oauth" }]);
-  // Removal through the keychain (e.g. "remove my credentials") disconnects the account too.
-  const remaining = await keychain.listByOwner("u1");
-  await keychain.remove("u1", remaining.find((c) => c.service === "model-openai")!.id);
+  await store.delete("u1", "openai");
   assert.equal(await store.get("u1", "openai"), null);
   assert.deepEqual(await store.connections("u1"), []);
+});
+
+test("stale subscription tokens refresh once (single-flight) inside the keychain", async () => {
+  let refreshCalls = 0;
+  const keychain = createKeychain({
+    creds: createMemoryMap(),
+    grants: createMemoryMap(),
+    asks: createMemoryMap(),
+    key: deriveConnectorKey(KEY_MATERIAL),
+    refreshConnector: async (host, token) => {
+      refreshCalls += 1;
+      assert.equal(host, "auth.openai.com");
+      assert.equal(token.refreshToken, "ref-0");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+      return {
+        accessToken: "acc-1",
+        refreshToken: "ref-1",
+        idToken: fakeIdToken("acct_1"),
+        expiresAt: Date.now() + 3_600_000,
+      };
+    },
+  });
+  const store = createUserModelCredentialStore({ keychain });
+  await store.setOAuth("u1", "openai", {
+    accessToken: "acc-0",
+    refreshToken: "ref-0",
+    idToken: fakeIdToken("acct_1"),
+    accountId: "acct_1",
+    expiresAt: Date.now() - 1_000,
+  });
+  // Two concurrent turns for the same user: exactly one provider refresh.
+  const [a, b] = await Promise.all([store.derivedOAuth("u1", "openai"), store.derivedOAuth("u1", "openai")]);
+  assert.equal(refreshCalls, 1);
+  assert.equal(a?.accessToken, "acc-1");
+  assert.equal(b?.accessToken, "acc-1");
+  // The rotated id token and preserved account id both survived the refresh.
+  assert.equal(a?.idToken, fakeIdToken("acct_1"));
+  assert.equal(a?.accountId, "acct_1");
+  // A later read needs no further refresh.
+  assert.equal((await store.derivedOAuth("u1", "openai"))?.accessToken, "acc-1");
+  assert.equal(refreshCalls, 1);
 });
 
 test("routing: anthropic api key -> pi harness with a claude model", () => {
