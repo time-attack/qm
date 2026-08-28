@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { prepareCodexHome } from "../src/harness/codex-harness.ts";
 import { codexOAuthAuthFromValue } from "../src/harness/codex-auth-store.ts";
 import { resolveIndividualAuthRouting } from "../src/core/individual-auth-routing.ts";
+import { resolveModel } from "../src/model/pi-models.ts";
 import type { UserModelCredential } from "../src/model/user-model-credential-store.ts";
 
 const apikey = (provider: "anthropic" | "openai", apiKey: string): UserModelCredential => ({
@@ -169,6 +170,39 @@ test("routing: openai OAuth login -> codex harness (not pi)", () => {
 test("routing: requested model provider wins when that provider is connected", () => {
   const r = resolveIndividualAuthRouting(oauth("anthropic"), oauth("openai"), "gpt-5.6-sol");
   assert.equal(r?.harness, "codex");
+});
+
+test("routing: openai OAuth + pi org -> pi harness on the Codex subscription provider", () => {
+  const r = resolveIndividualAuthRouting(null, oauth("openai"), undefined, "pi");
+  assert.equal(r?.kind, "oauth");
+  assert.equal(r?.harness, "pi");
+  assert.equal(r?.model, "codex/gpt-5.6-sol");
+});
+
+test("routing: pi org keeps a requested openai model, namespaced to the subscription provider", () => {
+  const r = resolveIndividualAuthRouting(null, oauth("openai"), "gpt-5.6-terra", "pi");
+  assert.equal(r?.harness, "pi");
+  assert.equal(r?.model, "codex/gpt-5.6-terra");
+});
+
+test("routing: a non-pi org still hops to the codex harness", () => {
+  const r = resolveIndividualAuthRouting(null, oauth("openai"), undefined, "codex");
+  assert.equal(r?.harness, "codex");
+});
+
+test("routing: pi org with an anthropic OAuth login still uses the claude harness", () => {
+  const r = resolveIndividualAuthRouting(oauth("anthropic"), null, undefined, "pi");
+  assert.equal(r?.harness, "claude");
+});
+
+test("codex-subscription model ids resolve to pi-ai's openai-codex provider", () => {
+  const m = resolveModel("codex/gpt-5.6-sol");
+  assert.ok(m, "codex/gpt-5.6-sol must resolve");
+  assert.equal(String(m?.provider), "openai-codex");
+  assert.equal(String((m as { api?: string })?.api), "openai-codex-responses");
+  assert.equal(m?.id, "codex/gpt-5.6-sol");
+  // The un-prefixed id keeps resolving to the metered openai provider.
+  assert.equal(String(resolveModel("gpt-5.6-sol")?.provider), "openai");
 });
 
 test("routing: no credentials -> null (falls through to gate, no deployment key)", () => {

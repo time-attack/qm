@@ -133,7 +133,7 @@ import { randomUUID } from "node:crypto";
 import { LRUCache } from "lru-cache";
 import type { SkillResolution, GrantedSkillRef } from "../skills/skill-store.ts";
 import type { Orchestrator, OrchestratorDeps, OrchestratorInput } from "./orchestrator/types.ts";
-import { resolveModel } from "../model/pi-models.ts";
+import { resolveModel, CODEX_SUBSCRIPTION_PROVIDER } from "../model/pi-models.ts";
 import type { ProviderKeys } from "../harness/pi-harness.ts";
 import type { CodexTurnAuth } from "../harness/harness.ts";
 import { resolveIndividualAuthRouting } from "./individual-auth-routing.ts";
@@ -2334,7 +2334,17 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             userCredStore.get(actor.id, "anthropic"),
             userCredStore.get(actor.id, "openai"),
           ]);
-          const routing = resolveIndividualAuthRouting(anthCred ?? null, oaiCred ?? null, input.model);
+          // The org's harness choice decides how a ChatGPT subscription is
+          // served: pi orgs stay on pi (Codex provider inside pi-ai), others
+          // hop to the codex harness.
+          const orgRuntime = await deps.config?.getRuntimeSelectionDurable(resolution.orgScopeId);
+          const preferredHarness = input.harness ?? orgRuntime?.harnessId ?? deps.defaultHarness;
+          const routing = resolveIndividualAuthRouting(
+            anthCred ?? null,
+            oaiCred ?? null,
+            input.model,
+            preferredHarness,
+          );
           if (routing?.kind === "apikey") {
             userHarnessOverride = "pi";
             userProviderKeys = { [routing.provider]: routing.apiKey };
@@ -2345,6 +2355,20 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             const derived = await userCredStore.derivedOAuth(actor.id, "anthropic");
             if (derived) {
               claudeOauthToken = derived.accessToken;
+              userHarnessOverride = routing.harness;
+              userModelOverride = routing.model;
+            }
+          } else if (
+            routing?.kind === "oauth" &&
+            routing.provider === "openai" &&
+            routing.harness === "pi" &&
+            oaiCred?.oauth
+          ) {
+            // pi-on-ChatGPT: pi-ai's openai-codex provider takes the access
+            // token as its key (the account claim rides inside the JWT).
+            const derived = await userCredStore.derivedOAuth(actor.id, "openai");
+            if (derived) {
+              userProviderKeys = { [CODEX_SUBSCRIPTION_PROVIDER]: derived.accessToken };
               userHarnessOverride = routing.harness;
               userModelOverride = routing.model;
             }
@@ -2373,6 +2397,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           let authLabel = "api-key";
           if (claudeOauthToken) authLabel = "claude-oauth";
           else if (codexTurnAuth) authLabel = "codex-oauth";
+          else if (userProviderKeys?.[CODEX_SUBSCRIPTION_PROVIDER]) authLabel = "codex-oauth-pi";
           console.log(
             `[individual-auth] user=${actor.id} harness=${userHarnessOverride} model=${effectiveModel} auth=${authLabel}`,
           );

@@ -1,4 +1,5 @@
 import {
+  codexSubscriptionModelId,
   DEFAULT_AGENT_MODEL_ID,
   DEFAULT_CODEX_MODEL_ID,
   defaultModelForHarness,
@@ -12,12 +13,14 @@ export type IndividualAuthRouting =
   | { kind: "apikey"; provider: ModelProvider; harness: "pi"; model: string | undefined; apiKey: string }
   | { kind: "oauth"; provider: "anthropic"; harness: "claude"; model: string }
   | { kind: "oauth"; provider: "openai"; harness: "codex"; model: string }
+  | { kind: "oauth"; provider: "openai"; harness: "pi"; model: string }
   | null;
 
 export function resolveIndividualAuthRouting(
   anthCred: UserModelCredential | null,
   oaiCred: UserModelCredential | null,
   requestedModel: string | undefined,
+  preferredHarness?: string,
 ): IndividualAuthRouting {
   const requestedProvider = requestedModel ? resolveModel(requestedModel)?.provider : undefined;
   const pick = ((): { provider: "anthropic" | "openai"; cred: UserModelCredential } | null => {
@@ -48,12 +51,24 @@ export function resolveIndividualAuthRouting(
           harness: "claude",
           model: defaultModelForHarness("claude", DEFAULT_AGENT_MODEL_ID),
         }
-      : {
-          kind: "oauth",
-          provider: "openai",
-          harness: "codex",
-          model: defaultModelForHarness("codex", DEFAULT_CODEX_MODEL_ID),
-        };
+      : preferredHarness === "pi"
+        ? {
+            // pi-on-ChatGPT: the org runs the pi harness, so serve the
+            // subscription through pi-ai's Codex provider instead of
+            // switching the person onto the codex harness.
+            kind: "oauth",
+            provider: "openai",
+            harness: "pi",
+            model: codexSubscriptionModelId(
+              requestedModel && requestedProvider === "openai" ? requestedModel : DEFAULT_CODEX_MODEL_ID,
+            ),
+          }
+        : {
+            kind: "oauth",
+            provider: "openai",
+            harness: "codex",
+            model: defaultModelForHarness("codex", DEFAULT_CODEX_MODEL_ID),
+          };
   }
   return null;
 }

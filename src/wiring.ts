@@ -1087,6 +1087,7 @@ export function buildApp(
     identity,
     resolution,
     config: configStore,
+    defaultHarness: fallbackHarness,
     userModelCredentials,
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
     sessionTapeMode: config.sessionTapeMode,
