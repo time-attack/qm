@@ -134,11 +134,11 @@ async function claudeComplete(ctx: ApiCtx): Promise<void> {
 }
 
 export const userModelAuthRoutes: ReadonlyArray<Route<ApiCtx>> = [
-  { method: "GET", path: "/v1/user-model-auth/status", auth: "either", handle: getStatus },
-  { method: "POST", path: "/v1/user-model-auth/api-key", auth: "either", handle: putApiKey },
-  { method: "POST", path: "/v1/user-model-auth/disconnect", auth: "either", handle: disconnect },
-  { method: "POST", path: "/v1/user-model-auth/chatgpt/start", auth: "either", handle: chatgptStart },
-  { method: "POST", path: "/v1/user-model-auth/chatgpt/poll", auth: "either", handle: chatgptPoll },
-  { method: "POST", path: "/v1/user-model-auth/claude/start", auth: "either", handle: claudeStart },
-  { method: "POST", path: "/v1/user-model-auth/claude/complete", auth: "either", handle: claudeComplete },
+  { method: "GET", path: "/v1/user-model-auth/status", auth: "source", handle: getStatus },
+  { method: "POST", path: "/v1/user-model-auth/api-key", auth: "source", handle: putApiKey },
+  { method: "POST", path: "/v1/user-model-auth/disconnect", auth: "source", handle: disconnect },
+  { method: "POST", path: "/v1/user-model-auth/chatgpt/start", auth: "source", handle: chatgptStart },
+  { method: "POST", path: "/v1/user-model-auth/chatgpt/poll", auth: "source", handle: chatgptPoll },
+  { method: "POST", path: "/v1/user-model-auth/claude/start", auth: "source", handle: claudeStart },
+  { method: "POST", path: "/v1/user-model-auth/claude/complete", auth: "source", handle: claudeComplete },
 ];

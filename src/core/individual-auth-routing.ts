@@ -42,8 +42,18 @@ export function resolveIndividualAuthRouting(
   }
   if (pick.cred.kind === "oauth" && pick.cred.oauth) {
     return pick.provider === "anthropic"
-      ? { kind: "oauth", provider: "anthropic", harness: "claude", model: defaultModelForHarness("claude", DEFAULT_AGENT_MODEL_ID) }
-      : { kind: "oauth", provider: "openai", harness: "codex", model: defaultModelForHarness("codex", DEFAULT_CODEX_MODEL_ID) };
+      ? {
+          kind: "oauth",
+          provider: "anthropic",
+          harness: "claude",
+          model: defaultModelForHarness("claude", DEFAULT_AGENT_MODEL_ID),
+        }
+      : {
+          kind: "oauth",
+          provider: "openai",
+          harness: "codex",
+          model: defaultModelForHarness("codex", DEFAULT_CODEX_MODEL_ID),
+        };
   }
   return null;
 }

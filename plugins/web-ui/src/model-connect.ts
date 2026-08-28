@@ -483,14 +483,14 @@ function view(): TemplateResult {
   return html`
     <div class="signin">
       <div class="signin-panel mc-panel">
-        ${s.mode === "manager" && !anyConnected && !s.loading
-          ? html`<button type="button" class="mc-close" aria-label="Close" title="Close" @click=${closeManager}>
-              ×
-            </button>`
-          : nothing}
-        ${s.mode === "gate"
-          ? html`<div class="signin-brand">${brandMark()}<span>${brandName()}</span></div>`
-          : nothing}
+        ${
+          s.mode === "manager" && !anyConnected && !s.loading
+            ? html`<button type="button" class="mc-close" aria-label="Close" title="Close" @click=${closeManager}>
+                ×
+              </button>`
+            : nothing
+        }
+        ${s.mode === "gate" ? html`<div class="signin-brand">${brandMark()}<span>${brandName()}</span></div>` : nothing}
         <h1>${s.mode === "gate" ? "Connect your AI account" : "Your AI account"}</h1>
         <p class="signin-body">${subCopy}</p>
         ${body}

@@ -813,7 +813,10 @@ const apiRoutes: readonly WebRoute[] = [
         ),
       ]);
       if (authStatus === null || authStatus.status !== 200) {
-        return json(res, 503, { error: "unavailable", message: "the assistant is briefly unavailable — retry shortly" });
+        return json(res, 503, {
+          error: "unavailable",
+          message: "the assistant is briefly unavailable — retry shortly",
+        });
       }
       const parsed = JSON.parse(authStatus.text) as {
         individualModelAuth?: boolean;

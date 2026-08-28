@@ -1057,7 +1057,12 @@ export function createMemoryConfigStore(
         `turnWallClock:${id}`,
         `branding:${id}`,
         ...(id === org
-          ? [`approvedHarnesses:${org}`, `orgAmbient:${org}`, `interactiveFastMode:${org}`, `individualModelAuth:${org}`]
+          ? [
+              `approvedHarnesses:${org}`,
+              `orgAmbient:${org}`,
+              `interactiveFastMode:${org}`,
+              `individualModelAuth:${org}`,
+            ]
           : []),
         `channelHeaderPin:${id}`,
         `ackEmoji:${id}`,

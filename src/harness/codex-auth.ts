@@ -179,4 +179,3 @@ export async function acquireCodexOAuthAuthLock(
   }
   throw new Error("timed out acquiring the Codex OAuth auth lock");
 }
-

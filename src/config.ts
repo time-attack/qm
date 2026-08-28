@@ -170,9 +170,7 @@ export function providerKeysPresent(config: Config): ModelProviderAvailability {
     anthropic: Boolean(config.anthropicApiKey),
     openai: Boolean(config.openaiApiKey),
     openrouter: Boolean(config.openrouterApiKey),
-    ...(config.harness === "codex" && (config.codexAuthFile || config.codexAuthCredential)
-      ? { codexOAuth: true }
-      : {}),
+    ...(config.harness === "codex" && (config.codexAuthFile || config.codexAuthCredential) ? { codexOAuth: true } : {}),
   };
 }
 
@@ -636,8 +634,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const harness = harnessEnvStrict(env.HARNESS);
   const codexAuthCredential = env.CODEX_AUTH_CREDENTIAL?.trim() || undefined;
   const claudeAuthCredential = env.CLAUDE_AUTH_CREDENTIAL?.trim() || undefined;
-  const codexAuthCandidate =
-    harness === "codex" && !codexAuthCredential ? codexAuthFileForEnv(env, true) : undefined;
+  const codexAuthCandidate = harness === "codex" && !codexAuthCredential ? codexAuthFileForEnv(env, true) : undefined;
   const codexOAuthConfigured = Boolean(codexAuthCandidate && readCodexOAuthAuthFile(codexAuthCandidate));
   const secretEnv =
     codexOAuthConfigured && codexAuthCandidate

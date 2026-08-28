@@ -607,10 +607,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
                   `
             }
           </div>
-          <div class="composer-right">
-            ${runtimeControls}
-            ${sendControls(agent)}
-          </div>
+          <div class="composer-right">${runtimeControls} ${sendControls(agent)}</div>
         </div>
         ${composerNotice}
       </form>
