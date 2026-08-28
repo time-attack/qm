@@ -1,5 +1,4 @@
-import { decryptSecret, deriveConnectorKey, encryptSecret } from "../connectors/connector-client-store.ts";
-import type { DurableMap } from "../persistence/durable-map.ts";
+import type { Keychain } from "../credentials/keychain.ts";
 import type { ModelProvider } from "./pi-models.ts";
 
 export type UserCredentialKind = "apikey" | "oauth";
@@ -20,16 +19,8 @@ export interface UserModelCredential {
   updatedAt: number;
 }
 
-export interface StoredUserModelCredential {
-  userId: string;
-  provider: ModelProvider;
-  kind: UserCredentialKind;
-  secretEnc: string;
-  disabled?: boolean;
-  updatedAt: number;
-}
-
 interface SecretPayload {
+  kind: UserCredentialKind;
   apiKey?: string;
   oauth?: UserOAuthTokens;
 }
@@ -48,72 +39,99 @@ export interface UserModelCredentialStore {
 }
 
 const PROVIDERS: ModelProvider[] = ["anthropic", "openai"];
+const ORIGIN = "individual-model-auth";
 
-function keyFor(userId: string, provider: ModelProvider): string {
-  return `${userId}:${provider}`;
+function serviceFor(provider: ModelProvider): string {
+  return `model-${provider}`;
 }
 
-export function createUserModelCredentialStore(input: {
-  backing: DurableMap<StoredUserModelCredential>;
-  keyMaterial: string | Buffer;
-}): UserModelCredentialStore {
-  const key = deriveConnectorKey(input.keyMaterial, "user-model-credentials");
+function providerFor(service: string): ModelProvider | null {
+  const match = PROVIDERS.find((provider) => serviceFor(provider) === service);
+  return match ?? null;
+}
 
-  async function read(userId: string, provider: ModelProvider): Promise<UserModelCredential | null> {
-    const saved = await input.backing.get(keyFor(userId, provider));
-    if (!saved || saved.disabled || !saved.secretEnc) return null;
-    const payload = JSON.parse(decryptSecret(saved.secretEnc, key)) as SecretPayload;
-    return {
-      provider: saved.provider,
-      kind: saved.kind,
-      apiKey: payload.apiKey,
-      oauth: payload.oauth,
-      updatedAt: saved.updatedAt,
-    };
+/**
+ * Per-user AI-account custody, backed by the org keychain — NOT a parallel
+ * secret store. Each (user, provider) pair is one ordinary keychain credential
+ * owned by that user, so keychain encryption, ownership checks, admin
+ * visibility, and "remove my credentials" all apply to AI logins for free.
+ * Token expiry lives inside the payload (not the keychain's `expiresAt`):
+ * an expired access token is still a live connection — its refresh token is
+ * exactly what the pre-turn refresh needs to read.
+ */
+export function createUserModelCredentialStore(input: { keychain: Keychain }): UserModelCredentialStore {
+  const { keychain } = input;
+
+  async function find(userId: string, provider: ModelProvider) {
+    const all = await keychain.listByOwner(userId);
+    return all.find((c) => c.service === serviceFor(provider) && c.origin === ORIGIN) ?? null;
   }
 
-  async function write(
-    userId: string,
-    provider: ModelProvider,
-    kind: UserCredentialKind,
-    payload: SecretPayload,
-  ): Promise<void> {
-    await input.backing.put(keyFor(userId, provider), {
-      userId,
-      provider,
-      kind,
-      secretEnc: encryptSecret(JSON.stringify(payload), key),
-      disabled: false,
-      updatedAt: Date.now(),
+  async function write(userId: string, provider: ModelProvider, payload: SecretPayload): Promise<void> {
+    await keychain.save({
+      ownerId: userId,
+      service: serviceFor(provider),
+      secret: JSON.stringify(payload),
+      origin: ORIGIN,
+      ...(payload.oauth?.accountId ? { accountLabel: payload.oauth.accountId } : {}),
     });
   }
 
   return {
-    get: read,
+    async get(userId, provider) {
+      const meta = await find(userId, provider);
+      if (!meta) return null;
+      const raw = await keychain.readOwnSecret(userId, meta.id);
+      if (!raw) return null;
+      let payload: SecretPayload;
+      try {
+        payload = JSON.parse(raw) as SecretPayload;
+      } catch {
+        return null;
+      }
+      if (payload.kind !== "apikey" && payload.kind !== "oauth") return null;
+      return {
+        provider,
+        kind: payload.kind,
+        ...(payload.apiKey ? { apiKey: payload.apiKey } : {}),
+        ...(payload.oauth ? { oauth: payload.oauth } : {}),
+        updatedAt: meta.updatedAt,
+      };
+    },
 
     async connections(userId) {
-      const found = await Promise.all(
-        PROVIDERS.map(async (provider) => {
-          const saved = await input.backing.get(keyFor(userId, provider));
-          return saved && !saved.disabled && saved.secretEnc ? { provider, kind: saved.kind } : null;
-        }),
-      );
-      return found.filter((c): c is UserCredentialConnection => c !== null);
+      const all = await keychain.listByOwner(userId);
+      const found: UserCredentialConnection[] = [];
+      for (const meta of all) {
+        if (meta.origin !== ORIGIN) continue;
+        const provider = providerFor(meta.service);
+        if (!provider) continue;
+        const raw = await keychain.readOwnSecret(userId, meta.id);
+        if (!raw) continue;
+        try {
+          const payload = JSON.parse(raw) as SecretPayload;
+          if (payload.kind === "apikey" || payload.kind === "oauth") found.push({ provider, kind: payload.kind });
+        } catch {
+          continue;
+        }
+      }
+      return found.sort((a, b) => PROVIDERS.indexOf(a.provider) - PROVIDERS.indexOf(b.provider));
     },
 
     async setApiKey(userId, provider, apiKey) {
       const secret = apiKey.trim();
       if (!secret) throw new Error("API key is required");
-      await write(userId, provider, "apikey", { apiKey: secret });
+      await write(userId, provider, { kind: "apikey", apiKey: secret });
     },
 
     async setOAuth(userId, provider, tokens) {
       if (!tokens.accessToken?.trim()) throw new Error("access token is required");
-      await write(userId, provider, "oauth", { oauth: tokens });
+      await write(userId, provider, { kind: "oauth", oauth: tokens });
     },
 
     async delete(userId, provider) {
-      await input.backing.delete(keyFor(userId, provider));
+      const meta = await find(userId, provider);
+      if (meta) await keychain.remove(userId, meta.id);
     },
   };
 }

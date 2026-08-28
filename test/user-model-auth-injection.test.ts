@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { createKeychain } from "../src/credentials/keychain.ts";
+import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
 import { createUserModelCredentialStore } from "../src/model/user-model-credential-store.ts";
 import { readFileSync } from "node:fs";
 import { prepareCodexHome } from "../src/harness/codex-harness.ts";
@@ -31,8 +33,18 @@ function fakeIdToken(accountId: string): string {
 
 const KEY_MATERIAL = "test-key-material-that-is-long-enough";
 
+function testStore() {
+  const keychain = createKeychain({
+    creds: createMemoryMap(),
+    grants: createMemoryMap(),
+    asks: createMemoryMap(),
+    key: deriveConnectorKey(KEY_MATERIAL),
+  });
+  return { keychain, store: createUserModelCredentialStore({ keychain }) };
+}
+
 test("user model credential store round-trips api key and oauth per user+provider", async () => {
-  const store = createUserModelCredentialStore({ backing: createMemoryMap(), keyMaterial: KEY_MATERIAL });
+  const { keychain, store } = testStore();
   await store.setApiKey("u1", "anthropic", "sk-ant-abc");
   const anth = await store.get("u1", "anthropic");
   assert.equal(anth?.kind, "apikey");
@@ -56,9 +68,25 @@ test("user model credential store round-trips api key and oauth per user+provide
   ]);
   assert.deepEqual(await store.connections("stranger"), []);
 
+  // Unified custody: the AI login is an ordinary keychain credential the
+  // owner (and keychain admin surfaces) can see, and keychain.remove works on.
+  const owned = await keychain.listByOwner("u1");
+  assert.deepEqual(owned.map((c) => c.service).sort(), ["model-anthropic", "model-openai"]);
+  assert.ok(owned.every((c) => c.origin === "individual-model-auth"));
+  assert.ok(!("secretEnc" in owned[0]!));
+  const oaiCred = owned.find((c) => c.service === "model-openai")!;
+  assert.equal(oaiCred.accountLabel, "acct_1");
+  // A stranger cannot read the owner's secret through the store's path.
+  assert.equal(await keychain.readOwnSecret("stranger", oaiCred.id), null);
+
   await store.delete("u1", "anthropic");
   assert.equal(await store.get("u1", "anthropic"), null);
   assert.deepEqual(await store.connections("u1"), [{ provider: "openai", kind: "oauth" }]);
+  // Removal through the keychain (e.g. "remove my credentials") disconnects the account too.
+  const remaining = await keychain.listByOwner("u1");
+  await keychain.remove("u1", remaining.find((c) => c.service === "model-openai")!.id);
+  assert.equal(await store.get("u1", "openai"), null);
+  assert.deepEqual(await store.connections("u1"), []);
 });
 
 test("routing: anthropic api key -> pi harness with a claude model", () => {

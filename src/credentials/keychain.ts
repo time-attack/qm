@@ -326,6 +326,8 @@ export interface Keychain extends ServiceCredentialStore, ConnectorTokenStore {
   listByOwners(ownerIds: string[]): Promise<Map<string, KeychainCredentialMeta[]>>;
   listConnectorsByOwners(ownerIds: string[]): Promise<Map<string, ConnectorMeta[]>>;
   getCredential(id: string): Promise<KeychainCredentialMeta | null>;
+  /** Decrypt an env credential the caller OWNS — no grant machinery, never someone else's. */
+  readOwnSecret(ownerId: string, credentialId: string): Promise<string | null>;
   remove(ownerId: string, id: string): Promise<boolean>;
 
   createGrant(input: CreateGrantInput): Promise<KeychainGrant>;
@@ -893,6 +895,12 @@ export function createKeychain(deps: {
     async getCredential(id) {
       const rec = await deps.creds.get(id);
       return rec ? toMeta(rec) : null;
+    },
+
+    async readOwnSecret(ownerId, id) {
+      const rec = await getOwned(ownerId, id);
+      if (!rec || rec.kind !== "env") return null;
+      return tryDecrypt(rec, (r) => decryptSecret(r.secretEnc, deps.key));
     },
 
     async remove(ownerId, id) {

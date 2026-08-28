@@ -176,10 +176,7 @@ import { createPostgresEgressAuditSink } from "./admin/postgres-egress-audit-sin
 import { createConsentLinkStore, type ConsentLinkStore, type ConsentLinkRecord } from "./connectors/consent-link.ts";
 import { createModelGateway, type ModelGateway } from "./model/model-gateway.ts";
 import { createModelCredentialStore, type ModelCredentialStore } from "./model/model-credential-store.ts";
-import {
-  createUserModelCredentialStore,
-  type UserModelCredentialStore,
-} from "./model/user-model-credential-store.ts";
+import { createUserModelCredentialStore, type UserModelCredentialStore } from "./model/user-model-credential-store.ts";
 import { setProviderBaseUrls } from "./model/provider-endpoints.ts";
 import { setCustomProviders } from "./model/custom-providers.ts";
 import { createCustomProviderStore, type CustomProviderStore } from "./model/custom-provider-store.ts";
@@ -442,10 +439,6 @@ export function buildApp(
       ...(config.openaiApiKey ? { openai: config.openaiApiKey } : {}),
       ...(config.openrouterApiKey ? { openrouter: config.openrouterApiKey } : {}),
     },
-  });
-  const userModelCredentials = createUserModelCredentialStore({
-    backing: artifactMap("user_model_credentials"),
-    keyMaterial: config.connectorSecretKey ?? randomBytes(32),
   });
   const identity = createIdentityService(artifactMap<DeactivationRecord>("deactivated_principals"));
   void identity.hydrate();
@@ -720,6 +713,10 @@ export function buildApp(
     key: credentialKey,
     refreshConnector: makeRefresh({ resolveClient }),
   });
+  // Per-user AI accounts live in the keychain itself (unified custody):
+  // same encryption, ownership, admin visibility, and removal flows as
+  // every other personal credential.
+  const userModelCredentials = createUserModelCredentialStore({ keychain: credentialStore });
   const keychain: Keychain | undefined = keychainKeyMaterial ? credentialStore : undefined;
   const browserSessionStore: BrowserSessionStore | undefined = keychainKeyMaterial
     ? createBrowserSessionStore({ sessions: artifactMap<StoredBrowserSession>("browser_sessions"), key: credentialKey })
