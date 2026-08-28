@@ -513,12 +513,12 @@ function drawConnectors(loading = false): void {
         </div>
       </div>
       <p class="kc-resource-description">
-        Lets the agent fetch credentials out of a 1Password vault you choose, at the moment a task needs them — nothing
-        from the vault is copied here.
+        Optional — the agent already asks you for a credential the moment a task needs one. Connect a vault only if you
+        want it to help itself instead of asking:
         <a href="https://developer.1password.com/docs/service-accounts/" target="_blank" rel="noopener noreferrer"
-          >Create a service account</a
+          >create a service account</a
         >
-        scoped to that vault, then paste its token on the one-time page.
+        scoped to that vault and paste its token once. Nothing from the vault is copied here.
       </p>
       <div class="kc-resource-actions">
         ${
