@@ -44,31 +44,33 @@ export function resolveIndividualAuthRouting(
     };
   }
   if (pick.cred.kind === "oauth" && pick.cred.oauth) {
-    return pick.provider === "anthropic"
-      ? {
-          kind: "oauth",
-          provider: "anthropic",
-          harness: "claude",
-          model: defaultModelForHarness("claude", DEFAULT_AGENT_MODEL_ID),
-        }
-      : preferredHarness === "pi"
-        ? {
-            // pi-on-ChatGPT: the org runs the pi harness, so serve the
-            // subscription through pi-ai's Codex provider instead of
-            // switching the person onto the codex harness.
-            kind: "oauth",
-            provider: "openai",
-            harness: "pi",
-            model: codexSubscriptionModelId(
-              requestedModel && requestedProvider === "openai" ? requestedModel : DEFAULT_CODEX_MODEL_ID,
-            ),
-          }
-        : {
-            kind: "oauth",
-            provider: "openai",
-            harness: "codex",
-            model: defaultModelForHarness("codex", DEFAULT_CODEX_MODEL_ID),
-          };
+    if (pick.provider === "anthropic") {
+      return {
+        kind: "oauth",
+        provider: "anthropic",
+        harness: "claude",
+        model: defaultModelForHarness("claude", DEFAULT_AGENT_MODEL_ID),
+      };
+    }
+    if (preferredHarness === "pi") {
+      // pi-on-ChatGPT: the org runs the pi harness, so serve the
+      // subscription through pi-ai's Codex provider instead of switching
+      // the person onto the codex harness.
+      return {
+        kind: "oauth",
+        provider: "openai",
+        harness: "pi",
+        model: codexSubscriptionModelId(
+          requestedModel && requestedProvider === "openai" ? requestedModel : DEFAULT_CODEX_MODEL_ID,
+        ),
+      };
+    }
+    return {
+      kind: "oauth",
+      provider: "openai",
+      harness: "codex",
+      model: defaultModelForHarness("codex", DEFAULT_CODEX_MODEL_ID),
+    };
   }
   return null;
 }
