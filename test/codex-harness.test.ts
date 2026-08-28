@@ -389,6 +389,36 @@ rl.on("line", (line) => {
   return path;
 }
 
+function accountEchoCodexBinary(dir: string, name: string, delayMs = 1): string {
+  const path = join(dir, `account-echo-${name}`);
+  writeFileSync(
+    path,
+    `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const readline = require("node:readline");
+const authPath = path.join(process.env.CODEX_HOME, "auth.json");
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") return send({ id: msg.id, result: {} });
+  if (msg.method === "initialized") return;
+  if (msg.method === "thread/start") return send({ id: msg.id, result: { thread: { id: "thread-" + process.pid } } });
+  if (msg.method === "turn/start") {
+    const auth = JSON.parse(fs.readFileSync(authPath, "utf8"));
+    const reply = String(auth.tokens.account_id ?? "none") + ":" + String("refresh_token" in auth.tokens);
+    send({ id: msg.id, result: { turn: { id: "turn-" + process.pid, status: "inProgress", items: [] } } });
+    return setTimeout(() => send({ method: "turn/completed", params: { threadId: "thread-" + process.pid, turn: { id: "turn-" + process.pid, status: "completed", items: [{ type: "agentMessage", text: reply, phase: "final_answer" }] } } }), ${delayMs});
+  }
+  if (msg.method === "turn/interrupt") return send({ id: msg.id, result: {} });
+});
+`,
+  );
+  chmodSync(path, 0o755);
+  return path;
+}
+
 function exitingCodexBinary(dir: string): string {
   const path = join(dir, "exiting-codex");
   writeFileSync(
@@ -651,7 +681,6 @@ test("Codex materializes ChatGPT OAuth auth as ephemeral child material without 
   assert.equal(existsSync(join(prepareCodexHome(defaultEnv, defaultJail), "auth.json")), true);
 });
 
-
 test("Codex diagnostics redact credential-shaped stderr", () => {
   assert.equal(
     redactCodexDiagnostics(
@@ -748,14 +777,6 @@ test("Codex rejects OAuth auth files without a trusted account claim", (t) => {
   );
   assert.equal(readCodexOAuthAuthFile(authFile), null);
 });
-
-
-
-
-
-
-
-
 
 test("Codex diagnostics redact malformed app-server output at the protocol boundary", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "qm-codex-malformed-test-"));
@@ -1037,8 +1058,6 @@ test("Codex preserves OAuth auth before discarding a failed startup", async (t) 
   assert.equal((persisted.tokens as Record<string, unknown>).access_token, "startup-access-before");
 });
 
-
-
 test("cancelling an OAuth startup after spawn closes the provider", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "qm-codex-cancel-startup-child-test-"));
   const authFile = join(dir, "auth.json");
@@ -1126,7 +1145,68 @@ test("cancelling a pending Codex turn/start stops and closes the runtime", async
   assert.equal(readFileSync(join(dir, "closed"), "utf8"), "closed");
 });
 
-
+test("per-user Codex turns run on their own app-server with derived auth, never the shared jail", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-codex-per-user-test-"));
+  const orgAuthFile = join(dir, "auth.json");
+  writeFileSync(
+    orgAuthFile,
+    JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "org-access",
+        refresh_token: "org-refresh",
+        account_id: "org-account",
+        id_token: oauthIdToken("org-account"),
+      },
+    }),
+    { mode: 0o600 },
+  );
+  const orgAuthBefore = readFileSync(orgAuthFile, "utf8");
+  const harness = createCodexHarness({
+    binaryPath: accountEchoCodexBinary(dir, "per-user"),
+    env: { CODEX_AUTH_FILE: orgAuthFile },
+    turnWallClockMs: 5_000,
+  });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const scope = { kind: "org", id: "test" } as unknown as ScopeId;
+  const run = (id: string, accountId?: string) =>
+    harness.turns.runTurn({
+      session: { id } as Session,
+      input: id,
+      systemPrompt: "be concise",
+      history: [],
+      tools: {} as HarnessTurnInput["tools"],
+      scopeLabel: scope,
+      orgScopeId: scope,
+      ...(accountId
+        ? {
+            codexAuth: {
+              accessToken: `${accountId}-access`,
+              refreshToken: `${accountId}-refresh`,
+              idToken: oauthIdToken(accountId),
+              accountId,
+            },
+          }
+        : {}),
+      emit: async (entry) => ({ ...entry, sessionId: id, seq: 1, createdAt: Date.now() }) as SessionEntry,
+      recordModelCall: () => {},
+    });
+  // Two different users' turns and an org turn, all concurrent.
+  const [alice, bob, org] = await Promise.all([
+    run("alice-turn", "acct-alice"),
+    run("bob-turn", "acct-bob"),
+    run("org-turn"),
+  ]);
+  // Each per-user turn saw its OWN account, and no jail ever held a refresh token.
+  assert.equal(alice.reply, "acct-alice:false");
+  assert.equal(bob.reply, "acct-bob:false");
+  assert.equal(org.reply, "org-account:false");
+  // The org credential on disk was never touched by per-user turns.
+  assert.equal(readFileSync(orgAuthFile, "utf8"), orgAuthBefore);
+});
 
 test("Codex fails closed when OAuth auth is removed after startup", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "qm-codex-oauth-delete-test-"));
