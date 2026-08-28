@@ -53,7 +53,7 @@ export function createCodexDeviceLogin(opts: { binaryPath?: string; env?: NodeJS
 
   const sweep = (): void => {
     const now = Date.now();
-    for (const login of [...pending.values()]) {
+    for (const login of pending.values()) {
       if (now > login.expiresAt) void cleanup(login);
     }
   };
@@ -72,7 +72,7 @@ export function createCodexDeviceLogin(opts: { binaryPath?: string; env?: NodeJS
       const server = new CodexAppServer({
         binaryPath,
         cwd: home,
-        env: { ...(opts.env ?? {}), CODEX_HOME: home },
+        env: { ...opts.env, CODEX_HOME: home },
         onNotification: async (method, params) => {
           if (method !== "account/login/completed") return;
           const p = (params ?? {}) as Record<string, unknown>;
@@ -158,7 +158,7 @@ export function createCodexDeviceLogin(opts: { binaryPath?: string; env?: NodeJS
     },
 
     async close(): Promise<void> {
-      for (const login of [...pending.values()]) await cleanup(login);
+      for (const login of pending.values()) await cleanup(login);
     },
   };
 }

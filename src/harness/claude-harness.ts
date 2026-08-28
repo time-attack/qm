@@ -455,7 +455,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
         abortController: controller,
         cwd: jail,
         env: perUserClaudeEnv(
-          claudeChildEnv(authEnv ? { ...(opts.env ?? {}), ...authEnv } : (opts.env ?? {}), jail),
+          claudeChildEnv(authEnv ? { ...opts.env, ...authEnv } : (opts.env ?? {}), jail),
           turn.claudeOauthToken,
         ),
         tools: allowSubagents ? ["Agent"] : [],

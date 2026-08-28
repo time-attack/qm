@@ -1365,7 +1365,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
         closeAbort.abort();
         await startingServer?.close().catch(() => undefined);
         await starting?.promise.catch(() => undefined);
-        for (const server of [...ephemeralServers]) {
+        for (const server of ephemeralServers) {
           ephemeralServers.delete(server);
           await server.close().catch(() => undefined);
         }
