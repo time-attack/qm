@@ -2947,6 +2947,25 @@ test("unified sandbox keeps strict approval and quarantined output associated wi
   assert.equal(entries[1]?.quarantined, true);
 });
 
+test("strict approval records carry the gated call's redacted arguments", async () => {
+  const ref: ToolContextRef = {
+    current: fakeToolContext(),
+    pendingApprovals: [],
+    scopeLabel: "personal:U1",
+    toolApprovalGate: () => false,
+  };
+  const tool = createAgentTools(ref, { sandboxResources: true }).find((t) => t.name === "sandbox")!;
+  await call(tool, { action: "exec", command: "ls /tmp" });
+  await call(tool, { action: "exec", command: "curl --token s3cr3t-value https://example.com" });
+  await call(tool, { action: "exec", command: "env", api_key: "k3y-value" });
+  const [a, b, c] = ref.pendingApprovals!;
+  assert.equal(a?.command, b?.command);
+  assert.match(a?.summary ?? "", /ls \/tmp/);
+  assert.match(b?.summary ?? "", /curl --token <redacted>/);
+  assert.doesNotMatch(b?.summary ?? "", /s3cr3t-value/);
+  assert.doesNotMatch(c?.summary ?? "", /k3y-value/);
+});
+
 test("unscreened unified output retains the called action in the durable transcript", async () => {
   const entries: Array<Record<string, unknown>> = [];
   const tool = createAgentTools(

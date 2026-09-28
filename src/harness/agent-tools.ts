@@ -16,6 +16,8 @@ import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { splitToScope } from "../api/artifact-share.ts";
 import { errMessage } from "../util/errors.ts";
 import { computerVerdict } from "../sandbox/sandbox.ts";
+import { redactCommand } from "../sandbox/exec-process-session.ts";
+import { redactCodexDiagnostics } from "./codex-app-server.ts";
 import { isObj } from "../util/objects.ts";
 import { BOT_MODES } from "../surface-cache/channel-policy-store.ts";
 import { headSlice, tailSlice } from "../util/text.ts";
@@ -62,6 +64,7 @@ export interface ToolContextRef {
     matched?: string;
     purpose?: string;
     approvalKey?: string;
+    summary?: string;
     grantModes?: { session: boolean; always: boolean };
   }>;
   pausedOnApproval?: boolean;
@@ -4273,6 +4276,7 @@ function withToolApprovalGate(
           reason: STRICT_TOOL_APPROVAL_REASON,
           kind: "approval",
           approvalKey: `tool:${approvalIdentity}`,
+          ...(params === undefined ? {} : { summary: redactCommand(redactCodexDiagnostics(JSON.stringify(params))) }),
           ...(tool.name === "sandbox" && isObj(params) && typeof params.purpose === "string"
             ? { purpose: params.purpose }
             : {}),
