@@ -2533,7 +2533,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               .filter((e) => e.type !== "soul"),
           );
           const detectStart = Date.now();
-          const decision = await deps.harness.models.shouldRespond({
+          const ownLastReply = (detectHistory.findLast((e) => e.type === "assistant")?.payload as { text?: string })
+            ?.text;
+          const decision = /\?(\s|$)/.test(ownLastReply ?? "")
+            ? { respond: true, reason: "answers the assistant's own question" }
+            : await deps.harness.models.shouldRespond({
             session,
             message: input.text,
             recentContext: memoryHistoryReset ? "" : (input.detectContext ?? ""),
