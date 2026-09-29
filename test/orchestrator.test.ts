@@ -2345,6 +2345,16 @@ test("an unprompted answer to the agent's own outstanding question gets a reply,
   assert.equal(answer.status, "ok");
 });
 
+test("an unprompted answer to a question the agent posted via the post tool gets a reply", async () => {
+  const { app } = freshApp();
+  const asked = await app.turn(channel("!post Which day should the announcement go out?"));
+  assert.equal(asked.status, "ok");
+  const answer = await app.turn(
+    channel("Sorry, didn't see the notification. Friday works, all good.", { unprompted: true }),
+  );
+  assert.equal(answer.status, "ok");
+});
+
 test("detectOpener drives turn detection but is NOT rendered into the prompt", async () => {
   const { app } = freshApp();
   const res = await app.turn(

@@ -2533,9 +2533,18 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               .filter((e) => e.type !== "soul"),
           );
           const detectStart = Date.now();
-          const ownLastReply = (detectHistory.findLast((e) => e.type === "assistant")?.payload as { text?: string })
-            ?.text;
-          const decision = /\?(\s|$)/.test(ownLastReply ?? "")
+          const lastTurnStart = detectHistory.findLastIndex(
+            (e) => e.type === "user" && !(e.payload as { overheard?: unknown }).overheard,
+          );
+          const askedOwnQuestion = detectHistory.slice(lastTurnStart + 1).some((e) => {
+            const p = e.payload as { action?: unknown; text?: unknown };
+            return (
+              (e.type === "assistant" || (e.type === "tool_call" && p.action === "post")) &&
+              typeof p.text === "string" &&
+              /\?(\s|$)/.test(p.text)
+            );
+          });
+          const decision = askedOwnQuestion
             ? { respond: true, reason: "answers the assistant's own question" }
             : await deps.harness.models.shouldRespond({
             session,
