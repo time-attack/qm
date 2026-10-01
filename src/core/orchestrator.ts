@@ -2547,20 +2547,20 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           const decision = askedOwnQuestion
             ? { respond: true, reason: "answers the assistant's own question" }
             : await deps.harness.models.shouldRespond({
-            session,
-            message: input.text,
-            recentContext: memoryHistoryReset ? "" : (input.detectContext ?? ""),
-            ...(!memoryHistoryReset && input.detectOpener ? { threadOpener: input.detectOpener } : {}),
-            systemPrompt: resolution.systemPrompt,
-            ...(input.gatewayContext?.reactionGuidance
-              ? { reactionGuidance: input.gatewayContext.reactionGuidance }
-              : {}),
-            history: detectHistory,
-            recordModelCall: (rec) => {
-              deps.modelGateway.recordCall({ at: Date.now(), scopeLabel: scopeId, ...rec });
-              void deps.budget?.record(actor.id, estimateCostUsd(rec.inputTokens));
-            },
-          });
+                session,
+                message: input.text,
+                recentContext: memoryHistoryReset ? "" : (input.detectContext ?? ""),
+                ...(!memoryHistoryReset && input.detectOpener ? { threadOpener: input.detectOpener } : {}),
+                systemPrompt: resolution.systemPrompt,
+                ...(input.gatewayContext?.reactionGuidance
+                  ? { reactionGuidance: input.gatewayContext.reactionGuidance }
+                  : {}),
+                history: detectHistory,
+                recordModelCall: (rec) => {
+                  deps.modelGateway.recordCall({ at: Date.now(), scopeLabel: scopeId, ...rec });
+                  void deps.budget?.record(actor.id, estimateCostUsd(rec.inputTokens));
+                },
+              });
           detectMs = Date.now() - detectStart;
           if (!decision.respond) {
             const reactions = decision.reactions?.length ? decision.reactions : undefined;
