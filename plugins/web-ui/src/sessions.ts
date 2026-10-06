@@ -1519,8 +1519,9 @@ async function bulkPatch(patch: SessionPatch): Promise<void> {
 
 function setArchived(s: CoreSession, archived: boolean): void {
   sessionsState.openMenuId = null;
-  const next = archived && !splitState.active && appState.currentView === "chats" ? sessionBelow(s) : undefined;
-  if (archived && s.id && closeSessionSurfaces(s.id) && next) void openSession(next);
+  const next = archived && appState.currentView === "chats" ? sessionBelow(s) : undefined;
+  const closed = archived && s.id && closeSessionSurfaces(s.id);
+  if (closed && next && !(focusedPaneConversation() ?? mainConversation()).state.sessionId) void openSession(next);
   void persistSessionPatch(s.id, { archived });
 }
 
