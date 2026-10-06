@@ -1519,8 +1519,17 @@ async function bulkPatch(patch: SessionPatch): Promise<void> {
 
 function setArchived(s: CoreSession, archived: boolean): void {
   sessionsState.openMenuId = null;
-  if (archived && s.id) closeSessionSurfaces(s.id);
+  const next = archived && !splitState.active && appState.currentView === "chats" ? sessionBelow(s) : undefined;
+  if (archived && s.id && closeSessionSurfaces(s.id) && next) void openSession(next);
   void persistSessionPatch(s.id, { archived });
+}
+
+/** Where to land after archiving the open chat: the one below it in Recents, else the one above. */
+function sessionBelow(s: CoreSession): CoreSession | undefined {
+  const { pinned, rest } = splitPinned(visibleSessions().filter((x) => !x.archived));
+  const list = [...pinned, ...rest];
+  const i = list.findIndex((x) => x.id === s.id);
+  return i < 0 ? undefined : (list[i + 1] ?? list[i - 1]);
 }
 
 function setPinned(s: CoreSession, pinned: boolean): void {
