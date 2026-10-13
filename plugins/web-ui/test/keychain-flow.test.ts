@@ -199,6 +199,13 @@ test("keychain page renders loading placeholders instead of empty states while l
   assert.match(shellCssSource, /\.kc-loading \.spinner/);
 });
 
+test("password import is only offered in the Mac desktop app", () => {
+  assert.match(connectorsSource, /dataset\.qmDesktop !== "darwin"/);
+  assert.match(connectorsSource, /data-passwords-import/);
+  assert.match(connectorsSource, /importPasswords/);
+  assert.match(connectorsSource, /brandMark\(\)/);
+});
+
 test("an inline credential card decides through the keychain approval route, not the command route", async () => {
   const calls: Array<{ url: string; body: unknown }> = [];
   const realFetch = globalThis.fetch;

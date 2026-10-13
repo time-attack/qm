@@ -33,6 +33,7 @@ import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/
 import { createBrandingCache, injectBranding } from "../../chassis/src/branding.ts";
 import { parseSuggestedActivities } from "../../chassis/src/suggested-activities.ts";
 import { principalInAllowlist } from "../../chassis/src/principal-allowlist.ts";
+import { passwordCredentialDrafts, type PasswordDraft } from "./password-import.ts";
 
 import {
   CORE_API_URL as CORE,
@@ -719,6 +720,73 @@ async function relayCore(res: ServerResponse, method: HttpMethod, pathWithQuery:
 
 async function relayCap(res: ServerResponse, method: HttpMethod, pathWithQuery: string, rawBody = ""): Promise<void> {
   relay(res, await coreFetchCap(method, pathWithQuery, rawBody));
+}
+
+async function saveImportedPasswords(
+  drafts: PasswordDraft[],
+): Promise<{ imported: number; failed: Array<{ service: string; accountLabel?: string; message: string }> }> {
+  const failed = (message: string) => drafts.map((draft) => passwordFailure(draft, message));
+  const cap = await coreFetch("POST", "/v1/session-cap", "");
+  if (cap.status !== 200) {
+    return {
+      imported: 0,
+      failed: failed(
+        cap.status === 401 ? "Sign in to QM before importing passwords." : "Could not save these passwords.",
+      ),
+    };
+  }
+  let token: string | undefined;
+  try {
+    token = (JSON.parse(cap.text) as { token?: string }).token;
+  } catch {
+    token = undefined;
+  }
+  if (!token) return { imported: 0, failed: failed("Could not save these passwords.") };
+  let imported = 0;
+  const errors: Array<{ service: string; accountLabel?: string; message: string }> = [];
+  for (const draft of drafts) {
+    const response = await fetch(`${CORE}/v1/keychain/credentials`, {
+      method: "POST",
+      headers: { "content-type": "application/json", [CAPABILITY_HEADER]: token },
+      body: JSON.stringify({
+        service: draft.service,
+        secret: draft.secret,
+        envKey: draft.envKey,
+        origin: "passwords-app",
+        ...(draft.accountLabel ? { accountLabel: draft.accountLabel } : {}),
+        ...(draft.host ? { host: draft.host } : {}),
+      }),
+      redirect: "manual",
+      signal: AbortSignal.timeout(20_000),
+    });
+    const text = await response.text();
+    if (response.status === 200) {
+      imported += 1;
+      continue;
+    }
+    let message = "Could not save this password.";
+    try {
+      const body = JSON.parse(text) as { message?: unknown };
+      if (
+        typeof body.message === "string" &&
+        body.message &&
+        body.message.length <= 200 &&
+        !body.message.includes(draft.secret)
+      )
+        message = body.message;
+    } catch {
+      message = "Could not save this password.";
+    }
+    errors.push(passwordFailure(draft, message));
+  }
+  return { imported, failed: errors };
+}
+
+function passwordFailure(
+  draft: PasswordDraft,
+  message: string,
+): { service: string; accountLabel?: string; message: string } {
+  return { service: draft.service, ...(draft.accountLabel ? { accountLabel: draft.accountLabel } : {}), message };
 }
 
 /**
@@ -2250,6 +2318,19 @@ const apiRoutes: readonly WebRoute[] = [
       const { res } = c;
       const id = c.params.id!;
       return relayCap(res, "POST", `/v1/keychain/grants/${encodeURIComponent(id)}/revoke`, "{}");
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/keychain/passwords",
+    handle: async (c) => {
+      const body = await readJson<{ passwords?: unknown }>(c.req, c.res, false);
+      if (!body) return;
+      const built = passwordCredentialDrafts(body.passwords);
+      if (!built.ok) return json(c.res, 400, { error: "bad_request", message: built.message });
+      if (!built.drafts.length) return json(c.res, 200, { imported: 0, skipped: built.skipped, failed: [] });
+      const saved = await saveImportedPasswords(built.drafts);
+      return json(c.res, 200, { imported: saved.imported, skipped: built.skipped, failed: saved.failed });
     },
   },
   {

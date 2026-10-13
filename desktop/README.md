@@ -15,7 +15,7 @@ QM_DESKTOP_URL=http://localhost:3000 npm start
 npm run package
 ```
 
-Packaging writes a native app for the current platform into `desktop/dist/`, registering the `qm-desktop` URL scheme. Use the packaged app for browser sign-in. The macOS build is an unsigned local prototype, with no automatic updates. It connects to a running server; it does not bundle the QM backend or provide offline agent execution.
+Packaging writes a native app for the current platform into `desktop/dist/`, registering the `qm-desktop` URL scheme. Use the packaged app for browser sign-in. Passwords import is built only into the macOS app. Windows and Linux packages do not include that extension or its native code. The macOS build is an unsigned local prototype, with no automatic updates. It connects to a running server; it does not bundle the QM backend or provide offline agent execution.
 
 ## Browser sign-in
 

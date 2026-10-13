@@ -6,7 +6,7 @@
   "type": "module",
   "main": "main.mjs",
   "scripts": {
-    "start": "electron .",
+    "start": "node native/build.mjs && electron .",
     "test": "node --experimental-test-module-mocks --test test/*.test.mjs",
     "package": "node package.mjs",
     "package:release": "node package.mjs --release",

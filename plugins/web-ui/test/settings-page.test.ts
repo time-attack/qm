@@ -58,9 +58,15 @@ test("the settings page offers the theme picker and a way into admin", () => {
   assert.match(settings, /value: "light"/);
   assert.match(settings, /value: "dark"/);
   assert.match(settings, /value: "system"/);
+  assert.match(settings, /value: "glass", label: "Liquid glass"/);
   assert.match(settings, /href=\$\{ADMIN_HOME_URL\}/);
   assert.match(settings, /role="radiogroup"/);
   assert.match(css, /\.settings-choice-option\.selected \{/);
+  assert.match(settings, /stored === "light" \|\| stored === "dark" \|\| stored === "glass"/);
+  assert.match(settings, /classList\.toggle\("glass", choice === "glass"\)/);
+  assert.match(settings, /storedTheme\(\) === "system" \|\| storedTheme\(\) === "glass"/);
+  assert.match(css, /html\.glass \{/);
+  assert.match(css, /html\.glass\[data-qm-desktop="darwin"\]/);
 });
 
 test("an imported palette is a fourth theme choice that only exists while a palette is stored", () => {

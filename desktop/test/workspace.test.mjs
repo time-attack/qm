@@ -8,11 +8,17 @@ const preload = await readFile(new URL("../workspace-preload.cjs", import.meta.u
 async function workspace(platform = "darwin") {
   const dom = new JSDOM('<div id="sidebar-body"></div><textarea></textarea>', { runScripts: "outside-only" });
   const { window } = dom;
-  window.process = { platform };
+  const glass = [];
   const listeners = new Map();
+  window.process = { platform };
   window.require = () => ({
     contextBridge: { exposeInMainWorld() {} },
-    ipcRenderer: { invoke() {}, on: (name, listener) => listeners.set(name, listener) },
+    ipcRenderer: {
+      invoke(channel, value) {
+        if (channel === "qm:glass") glass.push(value);
+      },
+      on: (name, listener) => listeners.set(name, listener),
+    },
   });
   window.HTMLElement.prototype.checkVisibility = function () {
     return !this.closest("[hidden], .collapsed, .sidebar-closed");
@@ -47,6 +53,7 @@ async function workspace(platform = "darwin") {
     add,
     key,
     cycle: (step) => listeners.get("qm:cycle-tab")({}, step),
+    glass,
     close: () => {
       window.dispatchEvent(new window.Event("blur"));
       window.close();
@@ -129,6 +136,62 @@ test("non-Mac desktop uses Control without intercepting bare number keys", async
     app.key("1", { ctrlKey: true });
     assert.deepEqual(app.opened, ["first"]);
     assert.equal(first.firstChild.dataset.qmShortcut, "Ctrl 1");
+  } finally {
+    app.close();
+  }
+});
+
+test("liquid glass reports the material the desktop window should use", async () => {
+  const app = await workspace();
+  try {
+    assert.deepEqual(app.glass, ["off"]);
+    app.window.document.documentElement.classList.add("glass");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(app.glass, ["off", "light"]);
+    app.window.document.documentElement.classList.add("dark");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(app.glass.at(-1), "dark");
+    app.window.document.documentElement.classList.remove("glass");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(app.glass.at(-1), "off");
+  } finally {
+    app.close();
+  }
+});
+
+test("each message gets a left-edge mark that jumps to it, and prompts no longer stick", async () => {
+  const app = await workspace();
+  try {
+    const shell = app.window.document.createElement("div");
+    shell.className = "custom-chat-shell";
+    shell.innerHTML = `<section class="chat-scroll"><div class="message-stack">
+      <article class="user-row latest-prompt stuck"><div class="pin-content">First question</div></article>
+      <article class="user-row"><div class="pin-content">Second question</div></article>
+    </div></section>`;
+    app.window.document.body.append(shell);
+    const scroller = shell.querySelector(".chat-scroll");
+    const rows = [...shell.querySelectorAll(".user-row")];
+    scroller.getBoundingClientRect = () => ({ top: 0 });
+    rows[0].getBoundingClientRect = () => ({ top: -40 });
+    rows[1].getBoundingClientRect = () => ({ top: 12 });
+    scroller.scrollTop = 500;
+    let jumped = null;
+    scroller.scrollTo = ({ top }) => {
+      jumped = top;
+    };
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const marks = [...shell.querySelectorAll(".qm-turn-mark")];
+    assert.equal(marks.length, 2);
+    assert.equal(shell.querySelector(".qm-turn-rail").hidden, false);
+    assert.equal(marks[0].getAttribute("aria-label"), "Jump to First question");
+    assert.equal(marks[1].getAttribute("aria-current"), "true");
+    const css = [...app.window.document.querySelectorAll("style")].map((style) => style.textContent).join("\n");
+    assert.match(
+      css,
+      /user-row\.latest-prompt,\s*\[data-qm-desktop\] \.message-stack \.user-row\.stuck \{\s*position: static !important/,
+    );
+    marks[0].click();
+    assert.equal(jumped, 452);
   } finally {
     app.close();
   }

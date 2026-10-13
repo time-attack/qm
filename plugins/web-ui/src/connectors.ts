@@ -2,7 +2,7 @@ import { html, render, type TemplateResult } from "lit";
 import { KeyRound, Link } from "lucide";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
-import { icon } from "./ui";
+import { brandMark, icon } from "./ui";
 import { connectorLogo } from "./connector-logo";
 import { appState, replacePanePreservingFocus } from "./shell";
 import { scopedSession, scopedViewTopbar } from "./session-scope";
@@ -102,6 +102,8 @@ let addingCredential: { service: string; envKey: string; purpose: string } | nul
 let secureDropUrl: string | null = null;
 let confirmation: { title: string; body: string; action: string; run: () => Promise<void> } | null = null;
 let confirmationOpener: HTMLElement | null = null;
+let importingPasswords = false;
+let importGeneration = 0;
 const keychainOperations = new KeychainOperations();
 
 let connectorsLoading = false;
@@ -110,6 +112,8 @@ let connectorsEverLoaded = false;
 let keysEverLoaded = false;
 
 export function resetKeychainState(): void {
+  importGeneration += 1;
+  importingPasswords = false;
   keychainOperations.reset();
   connectorProviders = {};
   keychainCredentials = [];
@@ -529,6 +533,7 @@ function drawConnectors(): void {
     html`
       ${scopedViewTopbar("keychain", () => drawConnectors())}
       <div class="kc-page-content" ?inert=${Boolean(confirmation)}>
+        ${passwordImportControl()}
         ${listPageTpl({
           title: "Keychain",
           action: {
@@ -549,6 +554,69 @@ function drawConnectors(): void {
   );
   replacePanePreservingFocus(host);
   if (confirmation) focusDialogCancel(host);
+}
+
+interface PasswordImportResult {
+  cancelled?: boolean;
+  message?: string;
+}
+
+function macPasswordImport(): (() => Promise<PasswordImportResult>) | undefined {
+  if (typeof document === "undefined" || document.documentElement.dataset.qmDesktop !== "darwin") return;
+  const desktop = (window as Window & { qmDesktop?: { importPasswords?: () => Promise<PasswordImportResult> } })
+    .qmDesktop;
+  return typeof desktop?.importPasswords === "function" ? () => desktop.importPasswords!() : undefined;
+}
+
+function passwordImportControl(): TemplateResult | undefined {
+  const start = macPasswordImport();
+  if (!start) return;
+  return html`<button
+    class="passwords-import"
+    type="button"
+    data-passwords-import
+    ?disabled=${importingPasswords || keychainOperations.mutationInFlight}
+    @click=${() => void importFromPasswords(start)}
+  >
+    ${brandMark()}
+    <span class="passwords-import-text">
+      <span class="passwords-import-title">${importingPasswords ? "Opening Passwords…" : "Import from Passwords"}</span>
+      <span class="passwords-import-detail">Website and generated passwords from the Mac Passwords app.</span>
+    </span>
+  </button>`;
+}
+
+async function importFromPasswords(start: () => Promise<PasswordImportResult>): Promise<void> {
+  if (importingPasswords) return;
+  const generation = importGeneration;
+  importingPasswords = true;
+  connectorNotice = "Opening Passwords… Choose Export Data to Another App, then choose QM.";
+  if (appState.currentView === "keychain") drawConnectors();
+  try {
+    const result = await start();
+    if (generation !== importGeneration) return;
+    if (result.cancelled) connectorNotice = "";
+    else {
+      connectorNotice = result.message || "Imported passwords from Passwords.";
+      await renderConnectors();
+    }
+  } catch (error) {
+    if (generation !== importGeneration) return;
+    connectorNotice = errMessage(error, "Could not import passwords.");
+  } finally {
+    if (generation === importGeneration) {
+      importingPasswords = false;
+      if (appState.currentView === "keychain") drawConnectors();
+    }
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("qm-passwords-imported", (event) => {
+    const detail = (event as CustomEvent<PasswordImportResult>).detail;
+    connectorNotice = detail?.message || "Imported passwords from Passwords.";
+    if (appState.currentView === "keychain") void renderConnectors();
+  });
 }
 
 export async function renderConnectors(): Promise<void> {
