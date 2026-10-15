@@ -39,6 +39,7 @@ import { MAX_BLOB_BYTES } from "../persistence/blob-transfer.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import type { MetricsSink } from "../admin/metrics-sink.ts";
 import type { RunStore } from "../runs/run-store.ts";
+import type { RunActivityStore } from "../runs/run-activity-store.ts";
 import { isTerminal } from "../runs/run-store.ts";
 import type { GoalView, TurnStream } from "../runs/turn-stream.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
@@ -162,6 +163,7 @@ export interface SlackCoreClientDeps {
   errors?: ErrorLog;
   metrics: MetricsSink;
   runs: RunStore;
+  runActivity?: Pick<RunActivityStore, "list">;
   turnStream: TurnStream;
   pickAckEmoji?(text: string, candidates: readonly string[]): Promise<string | undefined>;
   ackPicks?: AckEmojiPickStore;
@@ -175,7 +177,7 @@ export interface SlackCoreClientDeps {
 }
 
 const RUN_FALLBACK_POLL_MS = 1_000;
-const RUN_STALL_BUDGET_MS = 300_000;
+const RUN_STALL_BUDGET_MS = 600_000;
 
 export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClient {
   const lease = deps.leaderLease ?? createNoopLeaderLease();
@@ -321,6 +323,7 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
       });
       let lastProgressAt = Date.now();
       let lastMark = "";
+      let activityCount = 0;
       let goalSnapshot = "";
       const emitGoal = async (): Promise<void> => {
         if (!hooks.onGoal) return;
@@ -353,7 +356,14 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
             await emitGoal().catch(swallowAs("slack-core-client: goal refresh", undefined));
             const fb = deps.turnStream.firstBlock(runId);
             if (fb?.closed) signalFirstBlock(fb.text);
-            const mark = `${run.status}:${run.attempts}:${run.leaseExpiresAt ?? ""}`;
+            // Lease renewal only proves the worker is alive, not that the answer moved (#1561).
+            if (deps.runActivity)
+              activityCount = await deps.runActivity
+                .list(runId)
+                .then((a) => a.length)
+                .catch(swallowAs("slack-core-client: run activity", activityCount));
+            const streamed = deps.turnStream.startOffset(runId) + (deps.turnStream.snapshot(runId)?.length ?? 0);
+            const mark = `${run.status}:${run.attempts}:${streamed}:${activityCount}`;
             if (mark !== lastMark) {
               lastMark = mark;
               lastProgressAt = Date.now();
