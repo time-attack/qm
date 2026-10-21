@@ -13,7 +13,6 @@ import { createAclStore } from "../src/acl/acl-store.ts";
 import { createDeployService } from "../src/deploy/deploy-service.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
 import { createProjectStore, projectGroupRef, projectScopeId, type Project } from "../src/projects/project-store.ts";
-import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import {
   createCanManageScope,
   createCanReadScope,
@@ -1280,7 +1279,7 @@ test("Slack-linked project turns use the inherited channel roster", async () => 
 });
 
 test("ProjectStore delete erases the record rather than emptying its roster, so the group ref stops answering", async () => {
-  const projects = createProjectStore(undefined, { id: () => "del" });
+  const projects = createProjectStore(createMemoryMap(), { ...singleProcessDeps(), id: () => "del" });
   const project = await projects.create({ name: "Doomed", ownerId: "owner" });
   await projects.addMember(project.id, "owner", "member");
   const removed = await projects.remove(project.id, "owner");
@@ -1293,7 +1292,7 @@ test("ProjectStore delete erases the record rather than emptying its roster, so 
 });
 
 test("ProjectStore delete refuses a member who does not own the project", async () => {
-  const projects = createProjectStore(undefined, { id: () => "shared" });
+  const projects = createProjectStore(createMemoryMap(), { ...singleProcessDeps(), id: () => "shared" });
   const project = await projects.create({ name: "Shared", ownerId: "owner" });
   await projects.addMember(project.id, "owner", "member");
   assert.equal((await projects.remove(project.id, "member")).status, "forbidden");
@@ -1301,13 +1300,17 @@ test("ProjectStore delete refuses a member who does not own the project", async 
 });
 
 test("ProjectStore delete reports not_found instead of ok for an id it never stored", async () => {
-  const projects = createProjectStore(undefined, { id: () => "absent" });
+  const projects = createProjectStore(createMemoryMap(), { ...singleProcessDeps(), id: () => "absent" });
   assert.equal((await projects.remove("missing", "owner")).status, "not_found");
 });
 
 test("ProjectStore delete refuses an owner who has been deactivated", async () => {
   const active = new Set(["owner"]);
-  const projects = createProjectStore(undefined, { id: () => "frozen", isActiveMember: (p) => active.has(p) });
+  const projects = createProjectStore(createMemoryMap(), {
+    ...singleProcessDeps(),
+    id: () => "frozen",
+    isActiveMember: (p) => active.has(p),
+  });
   const project = await projects.create({ name: "Frozen", ownerId: "owner" });
   active.delete("owner");
   assert.equal((await projects.remove(project.id, "owner")).status, "forbidden");
@@ -1380,7 +1383,7 @@ test("ProjectStore delete reports not_found for a project that belongs to anothe
     updatedAt: 1,
   };
   await backing.put(foreign.id, foreign);
-  const projects = createProjectStore(backing);
+  const projects = createProjectStore(backing, singleProcessDeps());
 
   assert.equal((await projects.remove(foreign.id, "owner")).status, "not_found");
   assert.equal((await backing.get(foreign.id))?.name, "Theirs");
@@ -1399,6 +1402,77 @@ test("deleting a project records who deleted it in the audit log", async () => {
       deletions.map((event) => [event.principalId, event.resource, event.scopeLabel]),
       [["owner", project.id, projectScopeId(project.id)]],
     );
+  } finally {
+    await built.runtime.stop();
+  }
+});
+
+test("after a project is deleted its former member cannot open its chat or see it, and nothing it owned keeps running", async () => {
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "projects-delete-cascade-")) }));
+  try {
+    await built.app.upsertDirectory([
+      { principalId: "owner", displayName: "Owner", type: "internal" },
+      { principalId: "member", displayName: "Member", type: "internal" },
+    ]);
+    const project = (await built.app.createProject("owner", "Doomed"))!;
+    const scope = projectScopeId(project.id);
+    await built.app.addProjectMember(project.id, "owner", "member");
+    const threadRef = "web:owner:doomed";
+    const conversation = { kind: "group" as const, channelRef: projectGroupRef(project.id), threadRef, audience: [] };
+    assert.equal(
+      (await built.app.turn({ surface: "web", actor: { externalId: "owner" }, conversation, text: "PLAN" })).status,
+      "ok",
+    );
+    const session = (await built.sessions.getByThread(threadRef))!;
+    assert.ok(await built.app.getSessionForViewer(session.id, "member"), "the member could open the chat before");
+    const cron = await built.app.createCron({
+      ownerScopeId: scope,
+      owner: "member",
+      createdBy: "member",
+      action: "weekly digest",
+      schedule: { everyMs: 60_000 },
+    });
+    const hook = await built.app.createWebhook({
+      action: "triage",
+      verification: { scheme: "github", secret: "s" },
+      owner: "owner",
+      createdBy: "owner",
+      ownerScopeId: scope,
+    });
+    const { artifact: file } = await built.files.put({
+      id: "doomed-notes",
+      ownerScopeId: scope,
+      createdBy: "member",
+      name: "notes.txt",
+      path: "notes.txt",
+      mimetype: "text/plain",
+      data: Buffer.from("notes"),
+      direction: "out",
+    });
+    const skill = await built.skills.create({
+      scopeId: scope,
+      manifest: { name: "doomed-skill", description: "x", requiredCapabilities: [], body: "..." },
+      createdBy: "owner",
+    });
+
+    assert.equal((await built.app.deleteProject(project.id, "owner")).status, "ok");
+
+    assert.equal(await built.app.getSessionForViewer(session.id, "member"), null);
+    assert.deepEqual(await built.app.listSessions("member"), []);
+    assert.deepEqual(await built.app.listProjects("member"), []);
+    assert.equal(
+      (await built.app.listContexts("member")).some((c) => c.kind === "group"),
+      false,
+    );
+    assert.equal(
+      (await built.app.turn({ surface: "web", actor: { externalId: "member" }, conversation, text: "still here?" }))
+        .status,
+      "refused",
+    );
+    assert.equal((await built.crons.get(cron.id))?.archived, true, "the project's schedule keeps waking up");
+    assert.equal((await built.app.getWebhook(hook.id))?.enabled, false, "the project's webhook still accepts events");
+    assert.equal(await built.files.get(file.id), null, "the project's file is still served");
+    assert.equal((await built.skills.get(skill.id))?.status, "archived");
   } finally {
     await built.runtime.stop();
   }

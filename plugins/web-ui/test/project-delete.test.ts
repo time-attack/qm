@@ -37,8 +37,18 @@ interface ProjectsPage {
   failDeletes: (message: string) => void;
 }
 
+const PROJECT_CHAT = {
+  id: "sess-launch",
+  threadRef: "web:tester:launch",
+  scopeId: PROJECT_SCOPE,
+  type: "group",
+  channelName: "Launch",
+  title: "Launch plan",
+  updatedAt: Date.now(),
+};
+
 async function projectsPage(confirmed: boolean, ownerId?: string): Promise<ProjectsPage> {
-  const h = await harness({ path: "/projects", contexts: contexts(ownerId) });
+  const h = await harness({ path: "/projects", contexts: contexts(ownerId), listSessions: [PROJECT_CHAT] });
   await h.boot();
   h.releaseSessions();
   await h.sessionsReady();
@@ -186,6 +196,25 @@ test("a second click while the delete is in flight cannot send a second delete r
     await page.settle();
 
     assert.deepEqual(page.deletes, ["/api/projects/p1"]);
+  } finally {
+    await page.h.close();
+  }
+});
+
+test("a confirmed delete takes the project's chats out of the sidebar instead of regrouping them", async () => {
+  const page = await projectsPage(true);
+  try {
+    assert.ok(page.sidebar.textContent?.includes("Launch plan"), "the sidebar never showed the project's chat");
+
+    page.main.querySelector<HTMLButtonElement>('[aria-label="Delete Launch"]')!.click();
+    await page.settle();
+
+    assert.deepEqual(page.deletes, ["/api/projects/p1"]);
+    assert.equal(page.sidebar.textContent?.includes("Launch plan"), false);
+    assert.equal(
+      page.h.sessionsState.list.some((s) => s.id === PROJECT_CHAT.id),
+      false,
+    );
   } finally {
     await page.h.close();
   }

@@ -1130,7 +1130,12 @@ async function deleteProject(context: CoreContext): Promise<void> {
   const project = context.project;
   if (!project) return;
   const key = `project:${project.id}`;
-  if (!window.confirm(`Delete ${project.name}? This can't be undone.`)) return;
+  if (
+    !window.confirm(
+      `Delete ${project.name}? Everyone in it loses its chats, files, schedules, webhooks and apps. This can't be undone.`,
+    )
+  )
+    return;
   resourceBusy.add(key);
   contextsNotice = "";
   drawContexts();
@@ -1138,6 +1143,8 @@ async function deleteProject(context: CoreContext): Promise<void> {
     await api(`/api/projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
     contextsFetchSeq++;
     contextsState.list = contextsState.list.filter((c) => c.scopeId !== context.scopeId);
+    // Its chats go too; left in the list they would regroup as an unnamed group conversation.
+    sessionsState.list = sessionsState.list.filter((s) => s.scopeId !== context.scopeId);
     renderList();
   } catch (error) {
     contextsNotice = errMessage(error, "Couldn't delete that project.");
